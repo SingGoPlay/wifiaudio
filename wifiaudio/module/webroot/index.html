@@ -85,6 +85,11 @@ a{color:var(--accent)}
     <div class="desc">默认关闭（最省电）。开启后开始捕获并广播设备音频</div></div>
     <div class="switch" id="swEnabled" onclick="toggleEnabled()"></div>
   </div>
+  <div class="row">
+    <div><div class="label">开机自启</div>
+    <div class="desc">关闭后仅由管理器/WebUI 手动唤起（开机不自动启动）</div></div>
+    <div class="switch" id="swAutoStart" onclick="toggleAutoStart()"></div>
+  </div>
 </div>
 
 <!-- 预设管理 -->
@@ -514,6 +519,7 @@ function loadConfig() {
     return false;
   }
   document.getElementById("swEnabled").classList.toggle("on", String(m.enabled) === "1");
+  document.getElementById("swAutoStart").classList.toggle("on", String(m.auto_start) !== "0");
   document.getElementById("selRender").value = String(m.local_render) === "1" ? "1" : "0";
   document.getElementById("selCodec").value = m.codec || "pcm";
   document.getElementById("selPcmRate").value = m.pcm_rate || "auto";
@@ -651,10 +657,25 @@ function toggleEnabled() {
   setTimeout(refreshStatus, 2000);
 }
 
+function toggleAutoStart() {
+  var sw = document.getElementById("swAutoStart");
+  var wantOn = !sw.classList.contains("on");
+  sw.classList.toggle("on", wantOn);
+  var ok = saveConfig();
+  if (!ok) {
+    toast("配置写入失败");
+    sw.classList.toggle("on", !wantOn);
+    return;
+  }
+  toast(wantOn ? "已开启开机自启" : "已关闭开机自启（下次开机需手动启动）");
+  dirty = false;
+}
+
 function saveConfig() {
   // 生成 JSON 配置（写入 /storage/emulated/0/WiFiAudio/config.json，用户可访问）
   var content = JSON.stringify({
     enabled: document.getElementById("swEnabled").classList.contains("on") ? 1 : 0,
+    auto_start: document.getElementById("swAutoStart").classList.contains("on") ? 1 : 0,
     mode: document.getElementById("modeGame").classList.contains("active") ? "game" : "music",
     local_render: parseInt(document.getElementById("selRender").value) || 0,
     transport: document.getElementById("selTransport").value,

@@ -41,11 +41,14 @@ EOF
     echo "[$(date '+%m-%d %H:%M:%S')] config.json created (default)" >> "$SLOG" 2>/dev/null
 fi
 
-# 依据配置决定是否启动
+# 依据配置决定是否启动（enabled=1 且 auto_start=1 才自启；auto_start=0 时仅由管理器/WebUI 手动唤起）
 enabled=$(grep -o '"enabled"[[:space:]]*:[[:space:]]*[^,}]*' "$SDIR/config.json" 2>/dev/null | head -1 | cut -d: -f2- | tr -d ' "')
-if [ "$enabled" = "1" ]; then
-    echo "[$(date '+%m-%d %H:%M:%S')] enabled=1, starting service" >> "$SLOG" 2>/dev/null
+auto_start=$(grep -o '"auto_start"[[:space:]]*:[[:space:]]*[^,}]*' "$SDIR/config.json" 2>/dev/null | head -1 | cut -d: -f2- | tr -d ' "')
+if [ "$enabled" = "1" ] && [ "$auto_start" != "0" ]; then
+    echo "[$(date '+%m-%d %H:%M:%S')] enabled=1, auto-starting service" >> "$SLOG" 2>/dev/null
     "$MODDIR/bin/wifiaudio.sh" start >> "$SLOG" 2>&1
+elif [ "$enabled" = "1" ]; then
+    echo "[$(date '+%m-%d %H:%M:%S')] enabled=1 但 auto_start=0，不自动启动（等待管理器/WebUI 唤起）" >> "$SLOG" 2>/dev/null
 else
     echo "[$(date '+%m-%d %H:%M:%S')] enabled=0, service stays off (省电)" >> "$SLOG" 2>/dev/null
 fi

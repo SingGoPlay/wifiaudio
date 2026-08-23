@@ -204,6 +204,24 @@ private fun MainScreen(activity: ComponentActivity) {
                     }
                 )
             }
+            // 开机自启开关
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(text = "开机自启", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(text = "关闭后仅由本管理器唤起（开机不自动启动）", fontSize = 11.sp, color = Color(0xFF8C93B0))
+                }
+                Switch(
+                    checked = config.optString("auto_start") != "0",
+                    onCheckedChange = {
+                        setCfg("auto_start", if (it) 1 else 0)
+                        saveConfig(activity, config)
+                        toast = if (it) "已开启开机自启" else "已关闭开机自启（下次开机需手动启动）"
+                    }
+                )
+            }
         }
 
         // ===== 音频设置 =====
