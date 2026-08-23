@@ -1,0 +1,23 @@
+# 构建产物
+build/
+build-classes/
+build-dex/
+*.apk
+*.idsig
+*.keystore
+
+# Gradle
+.gradle/
+local.properties
+
+# 日志
+log/
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统
+.DS_Store

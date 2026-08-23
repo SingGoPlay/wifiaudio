@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WiFiAudio 配置</title>
+<style>
+:root{
+  --bg:#242424; --card:#1E1E1E; --card2:#434343; --text:#F2F2F2; --sub:#787E96;
+  --accent:#277AF7; --accent2:#1E5FD0; --ok:#2FA85C; --warn:#E6A23C; --err:#F12522;
+  --radius:16px;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;padding:16px;padding-bottom:120px}
+h1{font-size:20px;font-weight:700;display:flex;align-items:center;gap:8px}
+h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--sub);display:inline-block}
+h1 .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.sub{color:var(--sub);font-size:13px;margin:4px 0 16px}
+.card{background:var(--card);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.card h2{font-size:14px;color:var(--sub);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;font-weight:600}
+.row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #ffffff10}
+.row:last-child{border-bottom:none}
+.row .label{font-size:15px}
+.row .desc{font-size:12px;color:var(--sub);margin-top:2px}
+.switch{width:50px;height:30px;border-radius:15px;background:#3a4150;position:relative;transition:.2s;flex-shrink:0;cursor:pointer}
+.switch.on{background:var(--accent)}
+.switch::after{content:"";position:absolute;width:26px;height:26px;border-radius:50%;background:#fff;top:2px;left:2px;transition:.2s}
+.switch.on::after{left:22px}
+select,input[type=number],input[type=text]{background:var(--card2);border:1px solid #ffffff1a;color:var(--text);border-radius:10px;padding:8px 10px;font-size:14px;width:120px;outline:none}
+select:focus,input:focus{border-color:var(--accent)}
+.mode-btn{flex:1;padding:12px 8px;border:none;border-radius:12px;background:var(--card2);color:var(--sub);font-size:14px;font-weight:600;cursor:pointer;text-align:center}
+.mode-btn.active{background:var(--accent);color:#fff}
+.mode-btn .big{display:block;font-size:17px;margin-bottom:2px}
+.btn{background:var(--accent);color:#fff;border:none;border-radius:12px;padding:13px 18px;font-size:15px;font-weight:600;width:100%;cursor:pointer}
+.btn:active{transform:scale(.98)}
+.btn.ghost{background:var(--card2);color:var(--text)}
+.btn:disabled{opacity:.5}
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--card2);border-radius:10px;padding:10px 12px}
+.stat .k{font-size:12px;color:var(--sub)}
+.stat .v{font-size:16px;font-weight:600;margin-top:2px;word-break:break-all}
+.stat.wide{grid-column:1/-1}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+.badge.ok{background:#34c75922;color:var(--ok)}
+.badge.off{background:#ffffff12;color:var(--sub)}
+.badge.err{background:#ff453a22;color:var(--err)}
+.log{background:#0a0c10;border-radius:10px;padding:10px;font-family:monospace;font-size:11px;color:#8fa3c0;max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.footer{position:fixed;bottom:0;left:0;right:0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:var(--bg);display:flex;gap:10px;border-top:1px solid #ffffff12}
+.footer .btn{flex:1}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-80px);background:#2a3040;color:#fff;padding:10px 18px;border-radius:10px;font-size:14px;transition:.3s;z-index:99;box-shadow:0 4px 20px #0008}
+.toast.show{transform:translateX(-50%) translateY(0)}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<h1><span id="dot" class="dot"></span> WiFiAudio 无线音频广播</h1>
+<div class="sub" id="ipInfo">—</div>
+
+<!-- 状态 -->
+<div class="card">
+  <h2>运行状态</h2>
+  <div class="status-grid" id="statusGrid">
+    <div class="stat wide"><div class="k">服务状态</div><div class="v" id="stRunning">—</div></div>
+    <div class="stat"><div class="k">本机 IP</div><div class="v" id="stIp">—</div></div>
+    <div class="stat"><div class="k">模式 / 传输</div><div class="v" id="stMode" style="font-size:14px">—</div></div>
+    <div class="stat"><div class="k">编码</div><div class="v" id="stCodec">—</div></div>
+    <div class="stat"><div class="k">采样率</div><div class="v" id="stRate">—</div></div>
+    <div class="stat"><div class="k">比特率</div><div class="v" id="stBitrate">—</div></div>
+    <div class="stat"><div class="k">TCP 端口</div><div class="v" id="stTcp">—</div></div>
+    <div class="stat"><div class="k">UDP 端口</div><div class="v" id="stUdp">—</div></div>
+    <div class="stat"><div class="k">HTTP 端口</div><div class="v" id="stHttp">—</div></div>
+    <div class="stat"><div class="k">接收端连接数</div><div class="v" id="stClients">—</div></div>
+    <div class="stat"><div class="k">运行时长</div><div class="v" id="stUptime">—</div></div>
+    <div class="stat"><div class="k">通话捕获</div><div class="v" id="stCall">—</div></div>
+    <div class="stat wide"><div class="k">错误信息</div><div class="v" id="stErr" style="color:var(--err);font-size:13px">—</div></div>
+  </div>
+</div>
+
+<!-- 主开关 -->
+<div class="card">
+  <h2>启用广播</h2>
+  <div class="row">
+    <div><div class="label">启用 WiFi 音频广播</div>
+    <div class="desc">默认关闭（最省电）。开启后开始捕获并广播设备音频</div></div>
+    <div class="switch" id="swEnabled" onclick="toggleEnabled()"></div>
+  </div>
+</div>
+
+<!-- 预设管理 -->
+<div class="card">
+  <h2>🎛️ 预设管理</h2>
+  <div class="desc" style="margin-bottom:10px;font-size:12px;color:var(--sub)">一键套用完整配置组合，也可把当前配置保存为自定义预设</div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px" id="sysPresets"></div>
+  <div class="row" style="margin-top:10px">
+    <div><div class="label">自定义预设</div>
+    <div class="desc">选择后点「应用」填充到下方表单</div></div>
+    <select id="selPreset" style="width:150px"></select>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <input type="text" id="inPresetName" placeholder="新预设名称（如：我的人声模式）" style="flex:1;min-width:0">
+    <button class="btn" onclick="savePreset()" style="width:auto;flex:0 0 auto;padding:10px 16px">保存</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn ghost" onclick="applySelectedPreset()" style="width:auto;flex:1;padding:10px 0">应用所选</button>
+    <button class="btn ghost" onclick="deletePreset()" style="width:auto;flex:1;padding:10px 0">删除所选</button>
+  </div>
+</div>
+
+<!-- 模式预设 -->
+<div class="card">
+  <h2>模式预设（一键切换）</h2>
+  <div style="display:flex;gap:10px" id="modeRow">
+    <div class="mode-btn" id="modeMusic" onclick="setMode('music')">
+      <span class="big">🎵 音乐</span>高音质 · 稳定
+    </div>
+    <div class="mode-btn" id="modeGame" onclick="setMode('game')">
+      <span class="big">🎮 游戏</span>低延迟 · 竞技
+    </div>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <div><div class="label">传输协议</div>
+    <div class="desc">TCP 可靠稳定 / UDP 更低延迟（游戏模式自动用 UDP）</div></div>
+    <select id="selTransport" onchange="markDirty()">
+      <option value="tcp">TCP</option>
+      <option value="udp">UDP</option>
+    </select>
+  </div>
+</div>
+
+<!-- 音频设置 -->
+<div class="card">
+  <h2>音频设置</h2>
+  <div class="row">
+    <div><div class="label">本地声音</div>
+    <div class="desc">静音：声音只走 WiFi（类似插耳机）/ 照常：本地同时出声</div></div>
+    <select id="selRender" onchange="markDirty()">
+      <option value="0">本地静音</option>
+      <option value="1">本地照常</option>
+    </select>
+  </div>
+  <div class="row">
+    <div><div class="label">编码方式</div>
+    <div class="desc">PCM 无损低延迟 / OPUS 高压缩比音质好 / AAC 兼容性最好（PC 播放选 AAC 或 PCM）</div></div>
+    <select id="selCodec" onchange="markDirty()">
+      <option value="pcm">PCM 原始</option>
+      <option value="opus">OPUS 压缩</option>
+      <option value="aac">AAC 压缩</option>
+    </select>
+  </div>
+  <div class="row">
+    <div><div class="label">PCM 采样率</div>
+    <div class="desc">自动=跟随设备输出能力（Hi-Res 直通，最高 192kHz）；高采样率仅 PCM 模式生效</div></div>
+    <select id="selPcmRate" onchange="markDirty()">
+      <option value="auto">自动（跟随设备）</option>
+      <option value="48000">48 kHz</option>
+      <option value="96000">96 kHz</option>
+      <option value="192000">192 kHz</option>
+    </select>
+  </div>
+  <div class="row">
+    <div><div class="label">OPUS 码率 (kbps)</div>
+    <div class="desc">128≈CD音质感知，64 已不错，32 极省带宽</div></div>
+    <input type="number" id="inOpusBitrate" min="16" max="512" step="16" value="128" onchange="markDirty()">
+  </div>
+  <div class="row">
+    <div><div class="label">AAC 码率 (kbps)</div>
+    <div class="desc">仅 AAC 模式生效</div></div>
+    <input type="number" id="inBitrate" min="32" max="320" step="32" value="192" onchange="markDirty()">
+  </div>
+  <div class="row">
+    <div><div class="label">蜂窝通话捕获</div>
+    <div class="desc">尝试捕获 VoLTE 电话音频（尽力而为，依赖设备支持）</div></div>
+    <select id="selCall" onchange="markDirty()">
+      <option value="0">关闭</option>
+      <option value="1">开启</option>
+    </select>
+  </div>
+</div>
+
+<!-- 网络设置 -->
+<div class="card">
+  <h2>网络设置</h2>
+  <div class="row">
+    <div><div class="label">TCP 端口（接收端 App）</div></div>
+    <input type="number" id="inTcpPort" min="1024" max="65535" value="47800" onchange="markDirty()">
+  </div>
+  <div class="row">
+    <div><div class="label">HTTP 端口（PC 播放）</div>
+    <div class="desc">VLC 打开 http://IP:端口/stream</div></div>
+    <input type="number" id="inHttpPort" min="1024" max="65535" value="47801" onchange="markDirty()">
+  </div>
+</div>
+
+<!-- 连接指引 -->
+<div class="card">
+  <h2>接收端连接指引</h2>
+  <div style="font-size:13px;color:var(--sub);line-height:1.8">
+    <b style="color:var(--text)">Android 设备</b>：安装接收端 App，填写 IP 与端口（App 内可选手动/TCP/UDP）<br>
+    <b style="color:var(--text)">PC (VLC)</b>：打开网络串流 <code style="color:var(--accent)" id="vlcUrl">—</code><br>
+    <b style="color:var(--text)">浏览器测试</b>：<code style="color:var(--accent)" id="httpUrl">—</code>
+  </div>
+</div>
+
+<!-- 日志 -->
+<div class="card">
+  <h2>运行日志（最近 20 行）</h2>
+  <div class="log" id="logBox">—</div>
+</div>
+
+<div class="footer">
+  <button class="btn ghost" onclick="envCheck()">自检</button>
+  <button class="btn ghost" onclick="refreshAll()">刷新</button>
+  <button class="btn ghost" onclick="resetConfig()">重置</button>
+  <button class="btn" onclick="saveAndApply()" id="btnSave">保存并应用</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var MODDIR = "/data/adb/modules/wifiaudio";
+var CONFIG_JSON = "/storage/emulated/0/WiFiAudio/config.json";
+var dirty = false;
+var refreshTimer = null;
+var LOGFILE = "/storage/emulated/0/WiFiAudio/capture.log";
+
+// ===== 宿主接口探测（KSU / KernelSU-Next / MMRL / Magisk / APatch 等）=====
+var EXEC = null;       // 检测到的执行函数
+var EXEC_NAME = "无";  // 接口名（诊断显示）
+
+function detectExec() {
+  EXEC = null;
+  var roots = [
+    ["window.ksu", window.ksu],
+    ["window.kernelsu", window.kernelsu],
+    ["window.magisk", window.magisk],
+    ["window.mmrl", window.mmrl],
+    ["window.apatch", window.apatch]
+  ];
+  var methods = ["exec", "Exec", "shell", "runCommand", "execute", "execCommand"];
+  for (var i = 0; i < roots.length; i++) {
+    var r = roots[i][1];
+    if (!r) continue;
+    for (var j = 0; j < methods.length; j++) {
+      if (typeof r[methods[j]] === "function") {
+        EXEC = r[methods[j]].bind(r);
+        EXEC_NAME = roots[i][0] + "." + methods[j];
+        return;
+      }
+    }
+  }
+}
+
+function exec(cmd) {
+  if (!EXEC) {
+    return "[error] 当前宿主无 shell 接口(检测:" + EXEC_NAME + ")。WebUI 仅支持 KernelSU 或支持 WebUI 的 Magisk 管理器";
+  }
+  try { return EXEC(cmd) || ""; } catch(e) { return "[exec-error] " + e; }
+}
+
+// ===== 环境自检 =====
+function envCheck() {
+  var out = [];
+  out.push("◆ 宿主接口: " + (EXEC ? EXEC_NAME : "❌ 无（WebUI 自动操作不可用）"));
+  out.push("◆ config.json: " + exec("test -f '" + CONFIG_JSON + "' && echo 存在 || echo ❌缺失").trim());
+  out.push("◆ config.json 可写: " + exec("test -w '" + CONFIG_JSON + "' && echo ✓可写 || echo ❌不可写").trim());
+  out.push("◆ 日志目录创建: " + exec("mkdir -p /storage/emulated/0/WiFiAudio && echo ✓OK || echo ❌失败").trim());
+  out.push("◆ wifiaudio.sh: " + exec("test -x '" + MODDIR + "/bin/wifiaudio.sh' && echo ✓存在 || echo ❌缺失").trim());
+  out.push("◆ wifiaudio.jar: " + exec("test -f '" + MODDIR + "/bin/wifiaudio.jar' && echo ✓存在 || echo ❌缺失").trim());
+  out.push("◆ 服务状态: " + exec("sh '" + MODDIR + "/bin/wifiaudio.sh' status 2>&1").trim());
+  var box = document.getElementById("logBox");
+  box.textContent = out.join("\n");
+  toast("自检完成，结果见日志卡片");
+}
+
+function init() {
+  detectExec();
+  // 探测 moduleInfo（多宿主兼容）
+  var mi = null;
+  var roots = [window.ksu, window.kernelsu, window.magisk, window.mmrl, window.apatch];
+  for (var i = 0; i < roots.length; i++) {
+    var r = roots[i];
+    if (r && typeof r.moduleInfo === "function") {
+      try { mi = JSON.parse(r.moduleInfo()); } catch(e) {}
+      if (mi && mi.moduleDir) { MODDIR = mi.moduleDir; break; }
+    }
+  }
+  loadConfig();
+  loadPresets();
+  refreshStatus();
+  refreshTimer = setInterval(refreshStatus, 5000);
+  // 配置加载持续重试（进入页面早期接口/文件系统可能未就绪）
+  ensureConfigLoaded();
+  // 接口诊断（无 shell 接口时给出明确提示）
+  if (!EXEC) {
+    wlog("detectExec 失败: " + EXEC_NAME);
+    document.getElementById("stErr").textContent =
+      "❌ 当前宿主无 shell 执行接口(检测:" + EXEC_NAME + ")，正在重试加载配置...";
+    // WebView 接口可能注入稍晚：延迟重试
+    setTimeout(function() {
+      detectExec();
+      if (EXEC) {
+        loadConfig();
+        loadPresets();
+        refreshStatus();
+        document.getElementById("stErr").textContent = "✓ 接口就绪，配置已加载";
+      } else {
+        document.getElementById("stErr").textContent =
+          "❌ 当前宿主无 shell 执行接口(检测:" + EXEC_NAME + ")，WebUI 自动操作不可用。请用 KernelSU/支持WebUI的Magisk管理器，或点「自检」查看详情";
+      }
+    }, 600);
+  }
+}
+
+// ================= 预设管理 =================
+
+var PRESET_KEYS = ["mode","transport","codec","pcm_rate","opus_bitrate","aac_bitrate","local_render","capture_call"];
+
+function loadPresets() {
+  exec("mkdir -p '" + MODDIR + "/presets_user/'");
+  var box = document.getElementById("sysPresets");
+  box.innerHTML = "";
+  // 系统预设按钮
+  var rawSys = exec("ls '" + MODDIR + "/presets/' 2>/dev/null").trim();
+  if (isExecError(rawSys)) {
+    // 接口不可用：显示明确提示，不再渲染按钮
+    box.innerHTML = '<div class="desc" style="color:var(--err);line-height:1.6">⚠ ' + esc(rawSys) + '<br>预设需 shell 接口才能使用，请检查 WebUI 宿主</div>';
+    document.getElementById("selPreset").innerHTML = '<option value="">（接口不可用）</option>';
+    return;
+  }
+  var sys = rawSys.split(/\s+/).filter(Boolean);
+  sys.forEach(function(f){
+    var info = readPresetInfo(MODDIR + "/presets/" + f);
+    var btn = document.createElement("button");
+    btn.className = "mode-btn";
+    btn.style.flex = "0 0 auto";
+    btn.style.minWidth = "46%";
+    btn.innerHTML = '<span class="big">' + esc(info.name || f) + '</span>' + esc(info.desc || "");
+    btn.onclick = function(){ applyPresetFile(MODDIR + "/presets/" + f); };
+    box.appendChild(btn);
+  });
+  // 自定义预设下拉
+  var rawUsr = exec("ls '" + MODDIR + "/presets_user/*.conf' 2>/dev/null").trim();
+  var usr = isExecError(rawUsr) ? [] : rawUsr.split(/\s+/).filter(Boolean);
+  var sel = document.getElementById("selPreset");
+  sel.innerHTML = "";
+  if (usr.length === 0) {
+    var o = document.createElement("option");
+    o.value = ""; o.textContent = "（暂无自定义预设）";
+    sel.appendChild(o);
+  }
+  usr.forEach(function(f){
+    var name = f.replace(/^.*\//,"").replace(/\.conf$/,"");
+    var info = readPresetInfo(f);
+    var o = document.createElement("option");
+    o.value = f;
+    o.textContent = (info.name || name);
+    sel.appendChild(o);
+  });
+}
+
+function isExecError(s) {
+  return s.indexOf("[exec-error]") === 0 || s.indexOf("[error]") === 0;
+}
+
+function readPresetInfo(path) {
+  var cfg = exec("cat '" + path + "' 2>/dev/null");
+  var name = "", desc = "";
+  cfg.split("\n").forEach(function(l){
+    l = l.trim();
+    if (l.indexOf("name=") === 0) name = l.substring(5);
+    if (l.indexOf("desc=") === 0) desc = l.substring(5);
+  });
+  return {name: name, desc: desc};
+}
+
+function parsePreset(path) {
+  var cfg = exec("cat '" + path + "' 2>/dev/null");
+  var m = {};
+  cfg.split("\n").forEach(function(l){
+    l = l.trim();
+    if (!l || l[0] === "#") return;
+    var i = l.indexOf("=");
+    if (i > 0) m[l.substring(0,i).trim()] = l.substring(i+1).trim();
+  });
+  return m;
+}
+
+function applyPresetFile(path) {
+  var p = parsePreset(path);
+  if (Object.keys(p).length === 0) { toast("预设读取失败"); return; }
+  if (p.mode) updateModeUI(p.mode === "game" ? "game" : "music", false);
+  if (p.transport) document.getElementById("selTransport").value = p.transport;
+  if (p.codec) document.getElementById("selCodec").value = p.codec;
+  if (p.opus_bitrate) document.getElementById("inOpusBitrate").value = p.opus_bitrate;
+  if (p.aac_bitrate) document.getElementById("inBitrate").value = p.aac_bitrate;
+  if (p.pcm_rate) document.getElementById("selPcmRate").value = p.pcm_rate;
+  if (p.local_render) document.getElementById("selRender").value = p.local_render === "1" ? "1" : "0";
+  if (p.capture_call) document.getElementById("selCall").value = p.capture_call === "1" ? "1" : "0";
+  var info = readPresetInfo(path);
+  dirty = true;
+  toast("已应用预设：" + (info.name || "预设") + "，点「保存并应用」生效");
+}
+
+function applySelectedPreset() {
+  var f = document.getElementById("selPreset").value;
+  if (!f) { toast("请先选择自定义预设"); return; }
+  applyPresetFile(f);
+}
+
+function savePreset() {
+  var name = document.getElementById("inPresetName").value.trim();
+  if (!name) { toast("请输入预设名称"); return; }
+  if (!/^[\u4e00-\u9fa5a-zA-Z0-9 _\-（）()]+$/.test(name)) {
+    toast("名称仅支持中文/字母/数字/空格"); return;
+  }
+  exec("mkdir -p '" + MODDIR + "/presets_user/'");
+  var c = MODDIR + "/presets_user/" + name + ".conf";
+  var lines = ["# 自定义预设", "name=" + name, "desc=自定义预设",
+    "mode=" + (document.getElementById("modeGame").classList.contains("active") ? "game" : "music"),
+    "transport=" + document.getElementById("selTransport").value,
+    "codec=" + document.getElementById("selCodec").value,
+    "pcm_rate=" + document.getElementById("selPcmRate").value,
+    "opus_bitrate=" + document.getElementById("inOpusBitrate").value,
+    "aac_bitrate=" + document.getElementById("inBitrate").value,
+    "local_render=" + document.getElementById("selRender").value,
+    "capture_call=" + document.getElementById("selCall").value
+  ];
+  // 注意：busybox echo 不解释 \n，必须逐行写入（> 首行，>> 追加）
+  for (var i = 0; i < lines.length; i++) {
+    var op = (i === 0) ? ">" : ">>";
+    exec("echo '" + lines[i] + "' " + op + " '" + c + "'");
+  }
+  document.getElementById("inPresetName").value = "";
+  loadPresets();
+  toast("已保存自定义预设：" + name);
+}
+
+var deleteArmed = false;
+function deletePreset() {
+  var f = document.getElementById("selPreset").value;
+  if (!f) { toast("请先选择要删除的预设"); return; }
+  if (!deleteArmed) {
+    deleteArmed = true;
+    toast("再点一次「删除所选」确认删除");
+    setTimeout(function(){ deleteArmed = false; }, 3000);
+    return;
+  }
+  deleteArmed = false;
+  exec("rm -f '" + f + "'");
+  loadPresets();
+  toast("已删除");
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function loadConfig() {
+  var cfg = "";
+  var cfgOk = false;
+  // 方式1（首选）：base64 读取 —— 输出纯 ASCII 单行，规避 ksuwebui exec 对文本/多行的截断问题
+  var b64 = exec("base64 < '" + CONFIG_JSON + "' 2>&1").trim();
+  if (b64 && b64.indexOf("[error]") !== 0 && b64.indexOf("base64:") !== 0 && b64.indexOf("Permission denied") < 0) {
+    try {
+      cfg = decodeURIComponent(escape(atob(b64)));
+      cfgOk = true;
+    } catch (e) {
+      cfgOk = false;
+    }
+  }
+  // 方式2：脚本读取
+  if (!cfgOk) {
+    var rc = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' read-config 2>&1");
+    if (rc.indexOf("[error]") !== 0 && rc.trim() !== "" && rc.trim() !== "{}"
+        && rc.indexOf("No such file") < 0) {
+      cfg = rc;
+      cfgOk = true;
+    }
+  }
+  // 方式3：cat（兜底）
+  if (!cfgOk) {
+    var direct = exec("cat '" + CONFIG_JSON + "' 2>&1");
+    if (direct.indexOf("No such file") < 0 && direct.indexOf("cat:") !== 0
+        && direct.indexOf("Permission denied") < 0 && direct.trim() !== ""
+        && direct.indexOf("[error]") !== 0) {
+      cfg = direct;
+      cfgOk = true;
+    }
+  }
+  if (!cfgOk) {
+    // 首次失败：延迟重试一次（接口可能未就绪）
+    if (!configRetried) {
+      configRetried = true;
+      document.getElementById("stErr").textContent = "配置读取失败，自动重试中... (" + (cfg || "(空)").substring(0, 80) + ")";
+      setTimeout(function() {
+        configRetried = false;
+        loadConfig();
+      }, 500);
+      return false;
+    }
+    // 重试仍失败：保留当前表单，显示诊断
+    wlog("loadConfig 失败: " + (cfg || "(空)").substring(0, 300) + " 路径: " + CONFIG_JSON);
+    document.getElementById("stErr").textContent = "读取配置失败（已保留当前表单）: " + (cfg || "(空)").substring(0, 150);
+    document.getElementById("logBox").textContent = "⚠ 读取 config.json 失败:\n" + (cfg || "(空)") + "\n路径: " + CONFIG_JSON;
+    return false;
+  }
+  var m = {};
+  try {
+    m = JSON.parse(cfg);
+  } catch (e) {
+    document.getElementById("stErr").textContent = "config.json 解析失败（已保留当前表单）: " + cfg.substring(0, 150);
+    document.getElementById("logBox").textContent = "⚠ config.json 内容:\n" + cfg + "\n(解析失败: " + e + ")";
+    return false;
+  }
+  document.getElementById("swEnabled").classList.toggle("on", String(m.enabled) === "1");
+  document.getElementById("selRender").value = String(m.local_render) === "1" ? "1" : "0";
+  document.getElementById("selCodec").value = m.codec || "pcm";
+  document.getElementById("selPcmRate").value = m.pcm_rate || "auto";
+  document.getElementById("inBitrate").value = String(m.aac_bitrate || "192");
+  document.getElementById("inOpusBitrate").value = String(m.opus_bitrate || "128");
+  document.getElementById("selCall").value = String(m.capture_call) === "1" ? "1" : "0";
+  document.getElementById("inTcpPort").value = String(m.tcp_port || "47800");
+  document.getElementById("inHttpPort").value = String(m.http_port || "47801");
+  document.getElementById("selTransport").value = m.transport || "tcp";
+  updateModeUI((m.mode === "game") ? "game" : "music", false);
+  dirty = false;
+  configRetried = false;
+  wlog("loadConfig 成功: enabled=" + m.enabled + " codec=" + m.codec + " mode=" + m.mode);
+  return true;
+}
+
+function ensureConfigLoaded() {
+  if (configLoadAttempts >= 10) return;
+  configLoadAttempts++;
+  setTimeout(function() {
+    if (!loadConfig()) {
+      ensureConfigLoaded(); // 未成功则继续重试（最长约 7 秒）
+    } else {
+      loadPresets();
+      refreshStatus();
+    }
+  }, 700);
+}
+
+function updateModeUI(mode, markD) {
+  document.getElementById("modeMusic").classList.toggle("active", mode === "music");
+  document.getElementById("modeGame").classList.toggle("active", mode === "game");
+  if (markD) { dirty = true; }
+}
+
+function setMode(mode) {
+  updateModeUI(mode, true);
+  // 游戏模式自动切 UDP；音乐模式自动切 TCP
+  document.getElementById("selTransport").value = (mode === "game") ? "udp" : "tcp";
+  toast("已选择「" + (mode === "game" ? "游戏" : "音乐") + "」模式，请点「保存并应用」生效");
+}
+
+function refreshStatus() {
+  var st = {};
+  var raw = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' status 2>&1").trim();
+  try { st = JSON.parse(raw); } catch(e) {
+    st = {};
+    document.getElementById("stErr").textContent = "状态解析失败: " + (raw || "(空输出)");
+  }
+  var on = st.running === true;
+  document.getElementById("dot").classList.toggle("on", on);
+  document.getElementById("stRunning").innerHTML = on
+    ? '<span class="badge ok">运行中</span>'
+    : '<span class="badge off">未运行</span>';
+  // IP：优先 status.json，其次直接查询
+  var ip = st.ip || exec("ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | head -1 | cut -d' ' -f2").trim()
+              || exec("getprop dhcp.wlan0.ipaddress 2>/dev/null").trim() || "—";
+  document.getElementById("stIp").textContent = ip;
+  var modeName = st.mode === "game" ? "🎮 游戏" : "🎵 音乐";
+  document.getElementById("stMode").textContent = modeName + " / " + (st.transport||"—").toUpperCase();
+  document.getElementById("stCodec").textContent = (st.codec || "—").toUpperCase();
+  document.getElementById("stRate").textContent = (st.sampleRate || 0) > 0 ? (st.sampleRate / 1000) + " kHz" : "—";
+  var br = st.bitrate || 0;
+  document.getElementById("stBitrate").textContent = br >= 1000000
+    ? (br / 1000000).toFixed(1) + " Mbps"
+    : (br > 0 ? Math.round(br / 1000) + " kbps" : "—");
+  document.getElementById("stTcp").textContent = st.tcpPort || "—";
+  document.getElementById("stUdp").textContent = st.udpPort || "—";
+  document.getElementById("stHttp").textContent = st.httpPort || "—";
+  document.getElementById("stClients").textContent = st.clients || 0;
+  document.getElementById("stUptime").textContent = fmtUptime(st.uptimeSec || 0);
+  document.getElementById("stCall").textContent = st.callActive ? "通话中" : (st.callCaptureSupported ? "已就绪" : "—");
+  if (!st.lastError) st.lastError = "";
+  document.getElementById("stErr").textContent = st.lastError || "无";
+  document.getElementById("ipInfo").textContent = "发送端: " + ip + "  端口: TCP " + (st.tcpPort || "47800") + " / UDP " + (st.udpPort || "48800");
+
+  var httpPort = st.httpPort || "47801";
+  document.getElementById("vlcUrl").textContent = "http://" + ip + ":" + httpPort + "/stream";
+  document.getElementById("httpUrl").textContent = "http://" + ip + ":" + httpPort + "/status";
+
+  refreshLog();
+}
+
+function refreshLog() {
+  var log = exec("tail -30 '" + LOGFILE + "' 2>&1").trim();
+  if (!log || log.indexOf("No such file") >= 0) {
+    log = exec("tail -20 '" + MODDIR + "/log/capture.log' 2>&1").trim();
+  }
+  var srv = exec("tail -10 '/storage/emulated/0/WiFiAudio/service.log' 2>&1").trim();
+  var box = document.getElementById("logBox");
+  if (!log && !srv) {
+    box.textContent = "（无日志。请点「保存并应用」或切换开关后重试，日志会写到 /storage/emulated/0/WiFiAudio/）";
+  } else if (log) {
+    box.textContent = log + (srv ? "\n\n--- service.log ---\n" + srv : "");
+  } else {
+    box.textContent = "--- service.log ---\n" + srv;
+  }
+}
+
+function fmtUptime(s) {
+  if (!s) return "—";
+  var h = Math.floor(s/3600), m = Math.floor(s%3600/60), sec = s%60;
+  return (h>0?h+"时":"") + m + "分" + sec + "秒";
+}
+
+function toggleEnabled() {
+  var sw = document.getElementById("swEnabled");
+  var wantOn = !sw.classList.contains("on");
+  sw.classList.toggle("on", wantOn);
+  if (wantOn) {
+    var ok = saveConfig();
+    if (!ok) {
+      toast("配置写入失败，请点「自检」查看环境");
+      sw.classList.toggle("on", false);
+      return;
+    }
+    // 验证 enabled 是否真的写入成功
+    var check = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' get enabled 2>&1").trim();
+    if (check !== "1") {
+      toast("配置写入失败：" + (check || "(空)" ) + " —— 请检查模块目录可写性");
+      sw.classList.toggle("on", false);
+      return;
+    }
+    var r = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' start 2>&1");
+    toast(r.trim() || "已启动");
+  } else {
+    var r = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' stop 2>&1");
+    saveConfig(); // enabled 已设为 0，重新写入
+    toast(r.trim() || "已停止");
+  }
+  dirty = false;
+  var btn = document.getElementById("btnSave");
+  btn.textContent = "保存并应用";
+  btn.style.background = "";
+  setTimeout(refreshStatus, 2000);
+}
+
+function saveConfig() {
+  // 生成 JSON 配置（写入 /storage/emulated/0/WiFiAudio/config.json，用户可访问）
+  var content = JSON.stringify({
+    enabled: document.getElementById("swEnabled").classList.contains("on") ? 1 : 0,
+    mode: document.getElementById("modeGame").classList.contains("active") ? "game" : "music",
+    local_render: parseInt(document.getElementById("selRender").value) || 0,
+    transport: document.getElementById("selTransport").value,
+    tcp_port: parseInt(document.getElementById("inTcpPort").value) || 47800,
+    http_port: parseInt(document.getElementById("inHttpPort").value) || 47801,
+    codec: document.getElementById("selCodec").value,
+    pcm_rate: document.getElementById("selPcmRate").value,
+    aac_bitrate: parseInt(document.getElementById("inBitrate").value) || 192,
+    opus_bitrate: parseInt(document.getElementById("inOpusBitrate").value) || 128,
+    capture_call: parseInt(document.getElementById("selCall").value) || 0
+  }); // 单行 JSON：ksuwebui 的 exec 对多行输出可能截断，单行最可靠
+  var b64 = toB64(content);
+  // 通过 wifiaudio.sh set-all 写入（busybox 环境处理 base64，最可靠）
+  var r = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' set-all '" + b64 + "' 2>&1").trim();
+  if (r.indexOf("OK config written") < 0) {
+    wlog("saveConfig 失败: " + (r || "(无输出)"));
+    var back = exec("cat '" + CONFIG_JSON + "' 2>&1");
+    document.getElementById("logBox").textContent =
+      "⚠ 保存失败: " + (r || "(无输出)") +
+      "\n--- config.json 当前内容 ---\n" + (back || "(空)") +
+      "\n--- 请把以上内容发开发者 ---";
+    return false;
+  }
+  return true;
+}
+
+/** UTF-8 安全的 base64 编码 */
+function toB64(s) {
+  return btoa(unescape(encodeURIComponent(s)));
+}
+
+function saveAndApply() {
+  var wasOn = document.getElementById("swEnabled").classList.contains("on");
+  var ok = saveConfig();
+  if (!ok) {
+    toast("配置写入失败，请点「自检」查看环境");
+    return;
+  }
+  // 验证配置写入
+  var check = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' get enabled 2>&1").trim();
+  if (wasOn && check !== "1") {
+    toast("配置写入失败：" + (check || "(空)"));
+    return;
+  }
+  var r;
+  if (wasOn) {
+    r = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' restart 2>&1");
+  } else {
+    r = exec("sh '" + MODDIR + "/bin/wifiaudio.sh' stop 2>&1");
+  }
+  toast((r.trim() || "已应用") + (wasOn ? "（已重启服务）" : ""));
+  dirty = false;
+  var btn = document.getElementById("btnSave");
+  btn.textContent = "保存并应用";
+  btn.style.background = "";
+  setTimeout(refreshStatus, 2000);
+}
+
+function markDirty() {
+  dirty = true;
+  var btn = document.getElementById("btnSave");
+  btn.textContent = "保存并应用 ⚠";
+  btn.style.background = "#ff9f0a";
+}
+
+function refreshAll() {
+  // 重新读取配置 + 刷新状态
+  loadConfig();
+  loadPresets();
+  refreshStatus();
+  toast("已刷新（配置已重新读取）");
+}
+
+var resetArmed = false;
+var configRetried = false;
+var configLoadAttempts = 0;
+var WEBUI_LOG = "/storage/emulated/0/WiFiAudio/webui.log";
+
+/** WebUI 操作日志：追加到 webui.log 文件（排查用） */
+function wlog(msg) {
+  var line = "[" + new Date().toLocaleString() + "] " + msg;
+  var safe = line.replace(/'/g, "'\\''");
+  exec("echo '" + safe + "' >> '" + WEBUI_LOG + "' 2>/dev/null");
+}
+function resetConfig() {
+  if (dirty) {
+    if (!resetArmed) {
+      resetArmed = true;
+      toast("有未保存修改！再点一次「重置」确认丢弃");
+      setTimeout(function(){ resetArmed = false; }, 3000);
+      return;
+    }
+    resetArmed = false;
+  }
+  loadConfig();
+  toast("已从 config.json 重置表单");
+}
+
+var toastTimer = null;
+function toast(msg) {
+  var t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2500);
+}
+
+function refreshAll() {
+  loadConfig();
+  refreshStatus();
+  toast("已刷新");
+}
+
+init();
+</script>
+</body>
+</html>

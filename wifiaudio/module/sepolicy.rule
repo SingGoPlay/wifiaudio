@@ -1,0 +1,10 @@
+# WiFiAudio SELinux 规则
+# 捕获服务以 u:r:ksu:s0 域运行（KSU 已对该域 permissive + allow all），
+# 以下规则作为保险，防止某些 KSU 配置下 ksu 域被收紧：
+allow ksu audioserver:binder call
+allow ksu audioserver:fd use
+allow ksu audio_service:binder call
+allow ksu system_server:binder call
+allow ksu servicemanager:binder call
+allow ksu property_socket:sock_file write
+allow ksu shell:process sigchld

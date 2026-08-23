@@ -1,0 +1,41 @@
+════════════════════════════════════════
+  WiFiAudio 全家桶 v3.1（免费 · 无广告 · 不杀后台）
+════════════════════════════════════════
+
+【三件套说明】
+1. wifiaudio-ksu.zip         发送端模块（需 KernelSU 或 Magisk）
+2. WifiAudioReceiver.apk     接收端 App（另一台设备播放）
+3. WifiAudioManager.apk      管理 App（配置管理，root 直连）
+
+【快速上手】
+发送端：
+  1. 刷 wifiaudio-ksu.zip → 重启
+  2. WebUI 或管理 App 开启「启用广播」
+  3. 记下 IP
+
+接收端：
+  1. 装 WifiAudioReceiver.apk
+  2. 自动发现附近设备，或填 IP → 连接 → 出声
+
+PC 播放：VLC 打开 http://发送端IP:47801/stream
+
+【配置建议】
+🎮 游戏：游戏模式（UDP+PCM+低缓冲）→ 延迟约 50-80ms
+🎵 听歌：音乐模式（TCP+PCM）→ 稳定
+🗜️ 弱网：OPUS 64kbps
+
+【常见问题】
+- 没声音：接收端点「测试音」验证扬声器；看「诊断」
+- 想低调：游戏时关闭广播（服务退出，进程消失）
+- 配置存哪：/storage/emulated/0/WiFiAudio/config.json
+- 日志：/storage/emulated/0/WiFiAudio/capture.log
+
+【特性】
+- PCM/OPUS/AAC 三编码（软解，任何 ROM 稳）
+- 异步硬解 + 软解自动兜底
+- AAudio 低延迟输出
+- 局域网自动发现 / 域名连接
+- 断线自动重连 / 音量控制
+- 5 种主题色
+
+════════════════════════════════════════
