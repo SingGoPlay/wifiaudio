@@ -18,7 +18,6 @@ write_default_config() {
     cat > "$CONFIG" <<'EOF'
 {
   "enabled": 0,
-  "auto_start": 1,
   "mode": "music",
   "local_render": 0,
   "transport": "tcp",
