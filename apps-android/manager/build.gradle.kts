@@ -13,8 +13,8 @@ android {
         applicationId = "com.wifiaudio.manager"
         minSdk = 26
         targetSdk = 36
-        versionCode = 407
-        versionName = "4.7"
+        versionCode = 408
+        versionName = "4.8"
     }
     buildTypes {
         release {

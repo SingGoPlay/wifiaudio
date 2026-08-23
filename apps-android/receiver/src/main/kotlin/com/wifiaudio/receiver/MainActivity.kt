@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -33,6 +34,9 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
@@ -189,6 +193,11 @@ fun App(activity: ComponentActivity, prefs: SharedPreferences) {
 @Composable
 private fun MainScreen(activity: ComponentActivity, prefs: SharedPreferences, controller: ThemeController) {
     val night = remember { mutableStateOf(prefs.getBoolean("night_mode", false)) }
+    // 更新检测（页面最顶端横幅）
+    var updateTag by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        updateTag = checkUpdate(activity)
+    }
 
     Column(
         modifier = Modifier
@@ -197,6 +206,9 @@ private fun MainScreen(activity: ComponentActivity, prefs: SharedPreferences, co
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
+        // ===== 更新提示横幅（仪表盘上方） =====
+        UpdateBanner(updateTag, activity)
+
         // ===== 标题行 =====
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(
@@ -725,4 +737,79 @@ private fun savePresets(prefs: SharedPreferences, list: List<JSONObject>) {
     val arr = JSONArray()
     list.forEach { arr.put(it) }
     prefs.edit().putString("presets", arr.toString()).apply()
+}
+
+// ================= 更新检测 =================
+
+/** 比较版本号（支持 v4.13 / 4.7 格式），latest > current 返回 true */
+private fun isNewer(latest: String, current: String): Boolean {
+    val l = latest.removePrefix("v").trim().split(".").mapNotNull { it.toIntOrNull() }
+    val c = current.trim().split(".").mapNotNull { it.toIntOrNull() }
+    for (i in 0 until maxOf(l.size, c.size)) {
+        val a = l.getOrElse(i) { 0 }
+        val b = c.getOrElse(i) { 0 }
+        if (a != b) return a > b
+    }
+    return false
+}
+
+/** 检查 GitHub Releases 最新版本；有新版本返回 tag，否则返回空串 */
+private suspend fun checkUpdate(ctx: Context): String {
+    val current = try {
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: ""
+    } catch (_: Throwable) {
+        ""
+    }
+    return withContext(Dispatchers.IO) {
+        try {
+            val conn = java.net.URL("https://api.github.com/repos/SingGoPlay/wifiaudio/releases/latest").openConnection()
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
+            val text = conn.getInputStream().bufferedReader().use { it.readText() }
+            val tag = JSONObject(text).optString("tag_name", "")
+            if (tag.isNotEmpty() && isNewer(tag, current)) tag else ""
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+}
+
+/** 页面顶端的更新提示横幅 */
+@Composable
+private fun UpdateBanner(tag: String, ctx: Context) {
+    if (tag.isEmpty()) return
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(color = Color(0xFFEAF2FF))
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "📦 发现新版本 v$tag，点「去下载」更新",
+                modifier = Modifier.weight(1f),
+                fontSize = 13.sp,
+                color = Color(0xFF3482FF),
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                onClick = {
+                    try {
+                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SingGoPlay/wifiaudio/releases/latest")))
+                    } catch (_: Throwable) {
+                    }
+                },
+                colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(color = Color(0xFF3482FF))
+            ) {
+                Text(
+                    text = "去下载",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
 }
