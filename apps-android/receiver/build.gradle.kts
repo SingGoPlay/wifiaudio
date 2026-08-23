@@ -13,8 +13,8 @@ android {
         applicationId = "com.wifiaudio.receiver"
         minSdk = 26
         targetSdk = 36
-        versionCode = 414
-        versionName = "4.14"
+        versionCode = 415
+        versionName = "4.15"
     }
     buildTypes {
         release {
