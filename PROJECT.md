@@ -10,7 +10,7 @@
 
 - **发送端**（KernelSU/Magisk 模块，需 root）：捕获手机播放的**全部音频**（媒体/游戏/通知/闹钟/系统音效/**VoIP 通话**如微信语音），经 WiFi 局域网广播
 - **接收端**（Android App）：另一台设备实时收听；**PC 用 VLC** 打开 HTTP 流也能听
-- 当前版本：**v4.15**（接收端/管理器/发声器三端版本号统一，versionCode 415）
+- 当前版本：**v4.16**（接收端/管理器/发声器三端版本号统一，versionCode 416）
 
 **技术亮点**：全量捕获（含 VoIP）、三编码（PCM/OPUS/AAC 软解兜底）、高采样率 PCM（48k/96k/192k 跟随设备）、UDP/TCP 可选（发射端决定、接收端自动跟随）、多端同时接收、低延迟游戏模式（~70-100ms）、MIUI 风格 UI（Kotlin + Compose + miuix）、自适应缓冲（欠载驱动）、AAudio exclusive 低延迟输出、GitHub 自动更新检测。
 
@@ -83,6 +83,7 @@ cd /workspace/apps-android
 - **miuix 要求 compileSdk 37**：沙箱伪造了 `/workspace/android-sdk/platforms/android-37.0`（基于官方 android-36 复制改 ApiLevel），`gradle.properties` 有 `android.suppressUnsupportedCompileSdk=37.0`
 - 依赖版本锁定：**Gradle 8.13 + AGP 8.13.2 + Kotlin 2.3.20 + Compose Multiplatform 1.10.3 + miuix 0.9.0 + material3（仅 Dropdown 已移除，可去掉）**
 - 构建时用 `nohup ... &` 后台跑 + 轮询日志（沙箱前台长命令会被终止）；**/tmp 会被清理**，一切工具放 /workspace
+- ⚠️ 实测（2026-09）：沙箱 proot 带 `--kill-on-exit`，**shell 调用一结束，nohup 后台进程（含 Gradle Daemon）会被连坐杀掉**。正确姿势：在**单次 shell 调用内同步跑完构建**（`timeout=600`），Gradle 增量构建约 40s 即可完成
 
 ### JNI 软解库重新编译（改 aaudio_jni.c 等后）
 ```bash
@@ -100,7 +101,7 @@ BIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 
 - 仓库：**https://github.com/SingGoPlay/wifiaudio**（公开）
 - 本地副本：`/workspace/wifiaudio-github/`（git remote 已配好，含 token）
-- 更新检测：App 启动时查 `releases/latest` 的 tag_name 对比自身 versionName（**三端版本号必须统一**，当前 4.15/415）
+- 更新检测：App 启动时查 `releases/latest` 的 tag_name 对比自身 versionName（**三端版本号必须统一**，当前 4.16/416）
 - 发布新版本：
 ```bash
 cd /workspace/wifiaudio-github

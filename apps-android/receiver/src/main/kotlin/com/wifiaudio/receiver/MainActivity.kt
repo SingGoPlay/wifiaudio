@@ -27,8 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
@@ -368,6 +368,36 @@ private fun ConfigCard(activity: ComponentActivity, prefs: SharedPreferences) {
             Text(text = "📡 连接配置", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
 
+            // 连接按钮（显眼位置、放大；未连接=蓝 / 已连接=红）
+            val connected = AppState.connected
+            Button(
+                onClick = {
+                    if (!connected) {
+                        activity.connect(
+                            FormState.ip, FormState.port, FormState.transportIdx, FormState.outputIdx,
+                            FormState.decodeIdx, FormState.bufferIdx, FormState.customMs,
+                            FormState.volume, FormState.autoReconnect, prefs
+                        )
+                    } else {
+                        activity.disconnect()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(58.dp),
+                cornerRadius = 18.dp,
+                colors = ButtonDefaults.buttonColors(
+                    color = if (connected) Color(0xFFE64340) else Color(0xFF3482FF),
+                    contentColor = Color.White
+                )
+            ) {
+                Text(
+                    text = if (connected) "⏹ 断 开" else "▶ 连 接",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
             // 附近设备
             Text(text = "附近设备（自动发现，点击填入）", fontSize = 12.sp, color = Color(0xFF8C93B0))
             Card(onClick = {
@@ -438,45 +468,12 @@ private fun ConfigCard(activity: ComponentActivity, prefs: SharedPreferences) {
             }
             Spacer(Modifier.height(10.dp))
 
-            // 音量
+            // 断线自动重连
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = "音量", fontSize = 13.sp, modifier = Modifier.width(40.dp))
-                Slider(
-                    value = FormState.volume.toFloat(),
-                    onValueChange = { FormState.volume = it.toInt(); activity.sendVolume(it.toInt()) },
-                    modifier = Modifier.weight(1f)
-                )
+                Text(text = "断线自动重连", fontSize = 13.sp, modifier = Modifier.weight(1f))
                 Switch(
                     checked = FormState.autoReconnect,
                     onCheckedChange = { FormState.autoReconnect = it }
-                )
-            }
-            Text(text = "右侧开关 = 断线自动重连", fontSize = 10.sp, color = Color(0xFF8C93B0))
-
-            Spacer(Modifier.height(12.dp))
-
-            // 连接按钮
-            val connected = AppState.connected
-            Button(
-                onClick = {
-                    if (!connected) {
-                        activity.connect(
-                            FormState.ip, FormState.port, FormState.transportIdx, FormState.outputIdx,
-                            FormState.decodeIdx, FormState.bufferIdx, FormState.customMs,
-                            FormState.volume, FormState.autoReconnect, prefs
-                        )
-                    } else {
-                        activity.disconnect()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(50.dp),
-                cornerRadius = 16.dp
-            ) {
-                Text(
-                    text = if (connected) "断 开" else "连 接",
-                    color = Color.White,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -613,12 +610,6 @@ private fun DiagLogCard(activity: ComponentActivity) {
 
 // ================= 逻辑扩展（挂到 Activity） =================
 
-private fun ComponentActivity.sendVolume(v: Int) {
-    val i = Intent(this, PlayerService::class.java).setAction(PlayerService.ACTION_VOLUME)
-    i.putExtra(PlayerService.EXTRA_VOLUME, v)
-    startService(i)
-}
-
 private fun ComponentActivity.connect(
     ip: String, port: String, transportIdx: Int, outputIdx: Int, decodeIdx: Int,
     bufferIdx: Int, customMs: String, volume: Int, autoReconnect: Boolean, prefs: SharedPreferences
@@ -682,7 +673,7 @@ private fun ComponentActivity.disconnect() {
 private fun ComponentActivity.runDiag() {
     val ip = prefs().getString("last_ip", "") ?: ""
     val port = (prefs().getString("last_port", "47800") ?: "47800").toIntOrNull() ?: 47800
-    AppState.statusText = "诊断发送端 $ip:$port …（请查看发送端 WebUI 状态）"
+    AppState.statusText = "诊断发送端 $ip:$port …（请查看发送端状态）"
 }
 
 private fun ComponentActivity.prefs(): SharedPreferences {

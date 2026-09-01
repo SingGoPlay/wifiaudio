@@ -4,11 +4,11 @@ import org.json.JSONObject;
 
 /**
  * 配置管理。配置存放在用户可访问目录 /storage/emulated/0/WiFiAudio/config.json（JSON 格式）。
- * 所有配置均可在 KernelSU/Magisk 模块 WebUI 中修改。
+ * 所有配置均可在 WiFiAudio 管理器 App 中修改（root 直连，wifiaudio.sh set-all）。
  */
 public final class Config {
 
-    /** 配置文件路径（用户可访问，WebUI 直接读写） */
+    /** 配置文件路径（用户可访问，管理器/脚本直接读写） */
     public static final String CONFIG_PATH = "/storage/emulated/0/WiFiAudio/config.json";
 
     private JSONObject json = new JSONObject();

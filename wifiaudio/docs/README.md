@@ -13,7 +13,7 @@
 | 🎮🎵 游戏/音乐双模式 | 一键切换：游戏=低延迟（UDP+小缓冲），音乐=高音质稳定（TCP+大缓冲） |
 | ⚡ UDP / TCP 可选 | UDP 更低延迟；TCP 可靠稳定 |
 | 📡 多端同时接收 | 局域网广播，多个接收端可同时连接 |
-| 🌐 WebUI 配置 | 所有配置在管理器内完成（KernelSU 原生 / Magisk 用 MMRL 等） |
+| 📱 管理器配置 | 发送端所有配置用 **WiFiAudio 管理器 App** 完成（root 直连，KernelSU/Magisk 通用） |
 | 🎛️ 预设系统 | 4 个系统预设 + 自定义预设（支持中文名） |
 | 📊 接收端实时统计 | 协议/编码/采样/码率/缓冲/**实时延迟**/解码输出（每秒刷新） |
 | 🔍 接收端诊断 | 一键查询服务端状态（编码器输出、连接设备、错误） |
@@ -36,12 +36,12 @@ build/
 **KernelSU 用户**：
 1. KernelSU 管理器 → 模块 → 从本地安装 → `wifiaudio-ksu.zip`
 2. 重启手机
-3. 打开模块 **WebUI** → 开启「启用广播」→ 状态变「运行中」
+3. 安装并打开 **WiFiAudio 管理器** App → 开启「启用广播」→ 状态变「运行中」
 4. 记下 IP 与端口（TCP/UDP/HTTP）
 
-**Magisk 用户**（无官方 WebUI，可配合 MMRL）：
+**Magisk 用户**（同样使用 WiFiAudio 管理器，或手动编辑配置）：
 1. Magisk 管理器 → 模块 → 安装同一份 zip → 重启
-2. 编辑 `/storage/emulated/0/WiFiAudio/config.json`（`"enabled": 1`）
+2. 安装 WiFiAudio 管理器 App 开启广播；或编辑 `/storage/emulated/0/WiFiAudio/config.json`（`"enabled": 1`）
 3. `su -c "sh /data/adb/modules/wifiaudio/bin/wifiaudio.sh start"`
 
 > 配置统一存放在 **`/storage/emulated/0/WiFiAudio/config.json`**（用户可直接查看/编辑）
@@ -60,7 +60,7 @@ build/
   - **AAC 模式**：`http://<发送端IP>:47801/stream.aac`
 - 命令行：`ffplay http://<发送端IP>:47801/stream`
 
-## 🌐 WebUI 配置
+## 🎛️ 预设与配置
 
 ### 🎛️ 预设
 **系统预设**：🎵 音乐高音质（TCP+PCM）/ 🎮 游戏低延迟（UDP+PCM）/ 🗜️ 弱网省流量（OPUS 64kbps）/ 📺 观影同播（本地照常出声）
@@ -122,13 +122,13 @@ build/
 
 | 现象 | 排查 |
 |---|---|
-| 启用后未运行 | WebUI 日志卡片；确认 `/storage/emulated/0/WiFiAudio/config.json` 的 `enabled=1` |
-| 配置刷新后变回默认 | WebUI「保存并应用」后看 toast 是否 `OK config written`；config.json 是配置源 |
+| 启用后未运行 | 确认 `/storage/emulated/0/WiFiAudio/config.json` 的 `enabled=1`；查看 `capture.log` |
+| 配置刷新后变回默认 | 管理器「保存并应用」后看提示是否 `OK config written`；config.json 是配置源 |
 | 接收端连不上 | 确认 IP/端口；`ping`；关 AP 隔离 |
 | 无声音 | 先点「🔊 测试音」验证扬声器；看统计「解码输出」是否增长；「🔍 诊断」查服务端编码器输出 |
 | OPUS/AAC 无声音 | 检查统计「解码输出」；App 日志（`Android/data/com.wifiaudio.receiver/files/wifiaudio.log`）；JNI 日志 `adb logcat -s AacSoft -d` / `-s OpusSoft` |
 | 声音断续 | 加大缓冲（音乐模式/自定义毫秒）；检查 WiFi |
-| 蜂窝通话无声音 | 通话捕获需 WebUI 开启且设备 HAL 支持（尽力而为） |
+| 蜂窝通话无声音 | 通话捕获需在配置中开启且设备 HAL 支持（尽力而为） |
 
 ## 🛠 从源码构建
 

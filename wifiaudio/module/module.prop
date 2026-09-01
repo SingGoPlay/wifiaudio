@@ -1,8 +1,7 @@
 id=wifiaudio
 name=WiFiAudio - 无线音频广播
-version=v3.4
-versionCode=304
+version=v3.5
+versionCode=305
 author=user
-description=实时捕获设备音频（媒体/游戏/通知/VoIP通话），通过 WiFi 广播到局域网，另一台设备（Android App 或 PC 播放器）即可接收播放。内置音乐/游戏/弱网/观影预设，支持自定义预设。兼容 KernelSU 与 Magisk。默认关闭（最省电）。
+description=实时捕获设备音频（媒体/游戏/通知/VoIP通话），通过 WiFi 广播到局域网，另一台设备（Android App 或 PC 播放器）即可接收播放。内置音乐/游戏/弱网/观影预设，支持自定义预设。兼容 KernelSU 与 Magisk。默认关闭（最省电）。配置请使用 WiFiAudio 管理器 App。
 actionIcon=icon.png
-webuiIcon=icon.png

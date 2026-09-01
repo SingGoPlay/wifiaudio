@@ -2,7 +2,7 @@ package com.wifiaudio;
 
 import org.json.JSONObject;
 
-/** 运行状态，供 WebUI / HTTP /status 查询 */
+/** 运行状态，供 WiFiAudio 管理器 / HTTP /status 查询 */
 public final class Status {
 
     public static volatile boolean running = false;

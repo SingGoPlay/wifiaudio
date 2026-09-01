@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * root 交互层：通过 su 执行命令，base64 传输数据（绕开文本编码/截断问题）。
- * 与 WebUI 的 wifiaudio.sh 命令完全一致，但输出处理完全可控。
+ * 与模块 wifiaudio.sh 命令完全一致，但输出处理完全可控。
  */
 public final class RootShell {
 

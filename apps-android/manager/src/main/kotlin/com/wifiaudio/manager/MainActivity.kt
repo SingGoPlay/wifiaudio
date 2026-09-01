@@ -1,7 +1,9 @@
 package com.wifiaudio.manager
 
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -42,11 +44,35 @@ import top.yukonga.miuix.kmp.theme.ThemeController
 class MainActivity : ComponentActivity() {
 
     private var uiScope = mutableStateOf(false)
+    private lateinit var prefs: SharedPreferences
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prefs = getSharedPreferences("wifiaudio_manager_prefs", MODE_PRIVATE)
         setContent {
             App(this)
+        }
+        checkRootAndNotify()
+    }
+
+    /** 冷启动检测 Root：无 Root 时弹窗提示（可点「不再提醒」关闭后续弹窗） */
+    private fun checkRootAndNotify() {
+        if (prefs.getBoolean("root_reminded", false)) return
+        // 后台线程检测，避免阻塞 UI
+        kotlin.concurrent.thread {
+            val ok = RootShell.hasRoot()
+            runOnUiThread {
+                if (!ok && !isFinishing) {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("需要 Root 权限")
+                        .setMessage("WiFiAudio 管理器需要 Root 权限才能配置发送端。\n\n未检测到 Root 环境，请安装 KernelSU、Magisk 或 APatch 后重试。")
+                        .setPositiveButton("不再提醒") { _, _ ->
+                            prefs.edit().putBoolean("root_reminded", true).apply()
+                        }
+                        .setNegativeButton("知道了", null)
+                        .show()
+                }
+            }
         }
     }
 }

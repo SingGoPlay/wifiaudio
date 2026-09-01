@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# WiFiAudio 控制脚本（供 service.sh 与 WebUI 调用）
+# WiFiAudio 控制脚本（供 service.sh 与 WiFiAudio 管理器调用）
 # 用法:
 #   wifiaudio.sh start|stop|restart|status|get <key>|set <key> <value>|set-all <base64-json>
 
@@ -75,7 +75,7 @@ start() {
     fi
     enabled=$(get_cfg enabled)
     if [ "$enabled" != "1" ]; then
-        echo "ERROR: enabled!=1 (current=$enabled), 请先在 WebUI 保存配置"
+        echo "ERROR: enabled!=1 (current=$enabled), 请先在 WiFiAudio 管理器开启广播"
         return 1
     fi
     if [ ! -f "$JAR" ]; then

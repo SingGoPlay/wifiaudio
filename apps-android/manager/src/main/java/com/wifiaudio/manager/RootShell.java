@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * root 交互层：通过 su 执行命令，base64 传输数据（绕开文本编码/截断问题）。
- * 与 WebUI 的 wifiaudio.sh 命令完全一致，但输出处理完全可控。
+ * 与模块 wifiaudio.sh 命令完全一致，但输出处理完全可控。
  */
 public final class RootShell {
 
@@ -17,6 +17,19 @@ public final class RootShell {
     public static final String STATUS = "/storage/emulated/0/WiFiAudio/status.json";
 
     private RootShell() {}
+
+    /** 检测 Root 环境（su 二进制 / 常见 root 框架路径，纯文件检查不触发授权弹窗） */
+    public static boolean hasRoot() {
+        String[] candidates = {
+                "/system/bin/su", "/system/xbin/su", "/sbin/su",
+                "/system/app/Superuser.apk", "/system/app/SuperSU", "/system/app/magisk.apk",
+                "/data/adb/magisk", "/data/adb/ksu", "/data/adb/apatch"
+        };
+        for (String p : candidates) {
+            if (new java.io.File(p).exists()) return true;
+        }
+        return false;
+    }
 
     /** 执行 su 命令，返回 stdout；失败返回 [error] 开头 */
     public static String exec(String cmd) {

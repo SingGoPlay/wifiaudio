@@ -1,9 +1,10 @@
 #!/system/bin/sh
 # WiFiAudio 安装脚本
 # 同时适配 KernelSU 与 Magisk：
-#   - KernelSU: 环境变量 KSU=true，SELinux 域 u:r:ksu:s0（permissive），支持 WebUI
-#   - Magisk:   环境变量 MAGISK_VER，SELinux 域 u:r:magisk:s0，无官方 WebUI（可手动编辑配置）
+#   - KernelSU: 环境变量 KSU=true，SELinux 域 u:r:ksu:s0（permissive）
+#   - Magisk:   环境变量 MAGISK_VER，SELinux 域 u:r:magisk:s0
 # 配置统一存放在 /storage/emulated/0/WiFiAudio/config.json（用户可直接访问）
+# 配置工具：WiFiAudio 管理器 App（root 直连）
 # 安装时按平台动态生成 sepolicy.rule（避免不存在的域导致策略编译失败）
 
 ui_print "- WiFiAudio 安装中..."
@@ -70,9 +71,41 @@ else
     ui_print "- 配置文件位置: /storage/emulated/0/WiFiAudio/config.json"
 fi
 
+# ── 询问是否清除原有配置文件（音量键选择，5 秒无操作默认保留）──
+SDIR=/storage/emulated/0/WiFiAudio
+if [ -f "$SDIR/config.json" ]; then
+    ui_print ""
+    ui_print "======================================"
+    ui_print "  检测到原有配置文件:"
+    ui_print "  $SDIR/config.json"
+    ui_print ""
+    ui_print "  [音量+] = 清除原配置（恢复默认）"
+    ui_print "  [音量-] = 保留原配置"
+    ui_print "  5 秒无操作将默认保留"
+    ui_print "======================================"
+    CHOICE=""
+    if command -v getevent >/dev/null 2>&1; then
+        i=0
+        while [ "$i" -lt 5 ]; do
+            EV=$(timeout 1 getevent -lc 1 2>/dev/null | grep -E 'VOLUME(UP|DOWN)' | head -1)
+            case "$EV" in
+                *VOLUMEUP*)   CHOICE=clear; break ;;
+                *VOLUMEDOWN*) CHOICE=keep;  break ;;
+            esac
+            i=$((i+1))
+        done
+    fi
+    if [ "$CHOICE" = "clear" ]; then
+        rm -f "$SDIR/config.json"
+        ui_print "- 已清除原有配置，首次启动将自动生成默认配置"
+    else
+        ui_print "- 已保留原有配置"
+    fi
+fi
+
 if [ "$PLATFORM" = "magisk" ]; then
-    ui_print "- 提示: Magisk 无官方 WebUI"
-    ui_print "- 配置方法: 编辑 /storage/emulated/0/WiFiAudio/config.json 后执行"
+    ui_print "- 配置方式: 安装 WiFiAudio 管理器 App（root 直连）"
+    ui_print "- 或编辑 /storage/emulated/0/WiFiAudio/config.json 后执行"
     ui_print "-   su -c 'sh $MODPATH/bin/wifiaudio.sh start'"
 fi
 ui_print "- 安装完成！默认关闭。启用前请确认两设备处于同一 WiFi 网络"

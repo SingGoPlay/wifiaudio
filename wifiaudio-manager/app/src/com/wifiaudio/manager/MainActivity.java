@@ -27,7 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * WiFiAudio 管理 App —— 替代 WebUI 的独立配置工具。
+ * WiFiAudio 管理 App —— 发送端独立配置工具（root 直连）。
  * 通过 root 直连，base64 传输，彻底绕开 WebView/exec 兼容问题。
  */
 public class MainActivity extends Activity {
@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
         title.setTextColor(c[3]);
         root.addView(title);
         TextView sub = new TextView(this);
-        sub.setText("root 直连配置（替代 WebUI，更稳定）");
+        sub.setText("root 直连配置发送端");
         sub.setTextSize(12);
         sub.setTextColor(c[4]);
         sub.setPadding(0, 0, 0, dp(10));
