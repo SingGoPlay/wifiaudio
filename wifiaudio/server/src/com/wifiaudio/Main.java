@@ -328,6 +328,7 @@ public final class Main {
                 udpServer.stop();
                 tcpServer.stop();
                 httpServer.stop();
+                mixer.stop();
                 loopback.stop();
                 Status.running = false;
                 Status.save();

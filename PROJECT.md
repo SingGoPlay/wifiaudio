@@ -10,7 +10,7 @@
 
 - **发送端**（KernelSU/Magisk 模块，需 root）：捕获手机播放的**全部音频**（媒体/游戏/通知/闹钟/系统音效/**VoIP 通话**如微信语音），经 WiFi 局域网广播
 - **接收端**（Android App）：另一台设备实时收听；**PC 用 VLC** 打开 HTTP 流也能听
-- 当前版本：**v4.16**（接收端/管理器/发声器三端版本号统一，versionCode 416）
+- 当前版本：**v4.18**（接收端/管理器/发声器三端版本号统一，versionCode 418；模块 module.prop 走独立版本线 v3.7/307）
 
 **技术亮点**：全量捕获（含 VoIP）、三编码（PCM/OPUS/AAC 软解兜底）、高采样率 PCM（48k/96k/192k 跟随设备）、UDP/TCP 可选（发射端决定、接收端自动跟随）、多端同时接收、低延迟游戏模式（~70-100ms）、MIUI 风格 UI（Kotlin + Compose + miuix）、自适应缓冲（欠载驱动）、AAudio exclusive 低延迟输出、GitHub 自动更新检测。
 
@@ -101,13 +101,13 @@ BIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 
 - 仓库：**https://github.com/SingGoPlay/wifiaudio**（公开）
 - 本地副本：`/workspace/wifiaudio-github/`（git remote 已配好，含 token）
-- 更新检测：App 启动时查 `releases/latest` 的 tag_name 对比自身 versionName（**三端版本号必须统一**，当前 4.16/416）
+- 更新检测：App 启动时查 `releases/latest` 的 tag_name 对比自身 versionName（**三端版本号必须统一**，当前 4.18/418）
 - 发布新版本：
 ```bash
 cd /workspace/wifiaudio-github
 # 1. 同步代码: tar 复制 /workspace 相关目录到副本（排除 build/.gradle/*.keystore）
 # 2. git add -A && git commit && git push
-# 3. GH_TOKEN=xxx ./upload_release.sh v4.16 "说明"   （打 tag + 建 Release + 上传 release/ 4 个产物）
+# 3. GH_TOKEN=xxx ./upload_release.sh v4.18 "说明"   （打 tag + 建 Release + 上传 release/ 4 个产物）
 ```
 
 ---
@@ -119,7 +119,8 @@ cd /workspace/wifiaudio-github
 - **采样率**：`pcm_rate` 配置 auto/48000/96000/192000，auto=检测设备输出能力（48k 系列）；编码模式强制 48k
 - **UDP 常开**：三个服务器始终启动（TCP/UDP/HTTP），UDP 客户端计数已同步 `Status.clients`
 - **StreamServer header[13]** = `useUdp ? 1 : 0`（反映发射端实际传输配置，接收端 auto 跟随）
-- **Mixer**：捕获线程同步分发（`mixLoopback` 直接调各 Sink `onPcm`）——已知可优化点：UDP send/HTTP write 可能阻塞捕获线程（见第 8 节）
+- **Mixer（v4.18 已线程解耦，别再改回同步分发）**：捕获线程只做「拷贝一帧 → 入队」；独立 `mixer-dispatch` 线程串行调用各 `Sink.onPcm`。队列 20 帧（满则丢最旧 + `Status.mixerDrops` 计数，绝不阻塞生产者），帧缓冲池复用。**为什么必须解耦**：`OpusEncoder`/`AacEncoder` 里 `codec.dequeueInputBuffer(20000)` 每帧最长阻塞 20ms，`UdpServer.send()` 发送缓冲满时也阻塞——跑在捕获线程上会让 `AudioRecord` 内部缓冲溢出（爆音/断续）。通话帧与回环帧现统一走同一分发线程（原先并发调用 Sink 的竞态也一并消除）。⚠️ **Sink 实现必须在 `onPcm` 内完成拷贝**，不得保留 `pcm` 引用（缓冲会回收复用）
+- **HttpServer 响应头**（v4.18 修过的坑）：三段流 `/stream`、`/stream.aac`、`/stream.opus` **必须先写 HTTP 响应头再写流数据**——`/stream` 要 `Content-Type: audio/wav`，且实时流长度未知，**不发 Content-Length**、只发 `Connection: close`（close-delimited，VLC/ffplay/浏览器通用）。早期版本直接把 `RIFF` WAV 头当正文写出，VLC 收不到 HTTP 头直接判定非 HTTP 流、无法识别。编码不匹配时返回 **409** + 纯文本提示，不要返回一个没有数据的空流让播放器干等
 
 ### 接收端（apps-android/receiver）
 - **PcmJitterBuffer**（PlayerService 内部类）：网络线程入队 + 播放线程按 AudioTrack/AAudio 阻塞节流；预缓冲；**欠载驱动自适应**（3 秒内有欠载才加深，TCP 攒包不误判）；漂移伺服（水位持续偏高丢 5ms）；`currentMs = 队列 + 输出缓冲`
@@ -150,9 +151,9 @@ cd /workspace/wifiaudio-github
 
 ## 8. 已知待办 / 可优化方向（按性价比）
 
-1. **Mixer 线程解耦**（最优先）：捕获线程只入队，独立分发线程——防止 UDP send/HTTP write 阻塞 `AudioRecord.read()` 导致爆音
+1. ~~**Mixer 线程解耦**~~ ✅ **v4.18 已完成**（捕获线程只入队，独立 `mixer-dispatch` 线程分发；溢出丢最旧 + `mixerDrops` 计数）
 2. **丢帧 Crossfade**：PcmJitterBuffer 丢帧衔接处 2-3ms 交叉淡化，消除咔哒
-3. **对象池**：减少 `onPcm` 频繁 `new byte[]`
+3. ~~**对象池**~~ ✅ **v4.18 已完成**（Mixer 帧缓冲池复用，不再每帧 `new byte[]`；Sink 侧每客户端拷贝仍在，可继续优化）
 4. TCP 音乐模式攒批 write（低成本，减少 write 次数）
 5. 已评估**不做**的：SOX 变速重采样（漂移极小）、PCM 双发 FEC（带宽翻倍不值）、接收端采样率反馈（现代设备 48k 直通为主）
 

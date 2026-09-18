@@ -109,13 +109,26 @@ public final class HttpServer implements Mixer.Sink {
             } else if ("/status".equals(path)) {
                 sendText(socket, 200, "application/json", Status.toJson());
             } else if ("/stream".equals(path) || "/stream.wav".equals(path)) {
-                streamWav(socket);
+                if (codecType != 0) {
+                    // 发射端不是 PCM：别发一个没有数据的 WAV 流让播放器傻等，明确报错
+                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("pcm"));
+                } else {
+                    streamWav(socket);
+                }
             } else if ("/stream.aac".equals(path)) {
-                streamAac(socket);
+                if (codecType != 1) {
+                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("aac"));
+                } else {
+                    streamAac(socket);
+                }
             } else if ("/stream.opus".equals(path)) {
-                streamOpus(socket);
+                if (codecType != 2) {
+                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("opus"));
+                } else {
+                    streamOpus(socket);
+                }
             } else {
-                sendText(socket, 404, "text/plain", "Not found. Try /stream, /stream.aac, /status");
+                sendText(socket, 404, "text/plain; charset=utf-8", "Not found. Try /stream, /stream.aac, /status");
             }
         } catch (IOException ignored) {
             // 客户端断开
@@ -127,41 +140,96 @@ public final class HttpServer implements Mixer.Sink {
         }
     }
 
+    private static final String SERVER_ID = "WiFiAudio/4.18";
+
+    private static String reason(int code) {
+        switch (code) {
+            case 200: return "OK";
+            case 206: return "Partial Content";
+            case 400: return "Bad Request";
+            case 404: return "Not Found";
+            case 405: return "Method Not Allowed";
+            case 409: return "Conflict";
+            default: return "OK";
+        }
+    }
+
     private void sendText(Socket socket, int code, String type, String body) throws IOException {
         OutputStream out = socket.getOutputStream();
         byte[] data = body.getBytes(StandardCharsets.UTF_8);
         StringBuilder sb = new StringBuilder();
-        sb.append("HTTP/1.1 ").append(code).append(" OK\r\n");
+        sb.append("HTTP/1.1 ").append(code).append(' ').append(reason(code)).append("\r\n");
+        sb.append("Server: ").append(SERVER_ID).append("\r\n");
         sb.append("Content-Type: ").append(type).append("\r\n");
         sb.append("Content-Length: ").append(data.length).append("\r\n");
+        sb.append("Cache-Control: no-cache\r\n");
         sb.append("Connection: close\r\n\r\n");
         out.write(sb.toString().getBytes(StandardCharsets.ISO_8859_1));
         out.write(data);
         out.flush();
     }
 
+    /**
+     * 直播流响应头。
+     * 关键：实时流长度未知，不发送 Content-Length，也不做 chunked ——
+     * 属于 HTTP/1.1 的 "close-delimited" 消息（RFC 7230 §3.3.3 第 7 类），
+     * 所以必须带 Connection: close，播放器持续读到连接关闭为止（VLC/ffplay/浏览器通用）。
+     */
+    private void sendStreamHeaders(OutputStream out, String contentType) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("HTTP/1.1 200 OK\r\n");
+        sb.append("Server: ").append(SERVER_ID).append("\r\n");
+        sb.append("Content-Type: ").append(contentType).append("\r\n");
+        sb.append("Cache-Control: no-cache, no-store\r\n");
+        sb.append("Pragma: no-cache\r\n");
+        sb.append("Accept-Ranges: none\r\n");
+        sb.append("Connection: close\r\n\r\n");
+        out.write(sb.toString().getBytes(StandardCharsets.ISO_8859_1));
+        out.flush();
+    }
+
+    private String codecName() {
+        return codecType == 1 ? "aac" : (codecType == 2 ? "opus" : "pcm");
+    }
+
+    private String codecMismatchHint(String requested) {
+        String alt = codecType == 1 ? "/stream.aac" : (codecType == 2 ? "/stream.opus" : "/stream");
+        return "该流不可用：发射端当前编码为 " + codecName() + "。\n"
+                + "请改用 " + alt + "，或在管理器 App 中把编码切换为 " + requested + "。\n";
+    }
+
     /** WAV + 连续 PCM 流 */
     private void streamWav(Socket socket) throws IOException {
-        HttpClient client = new HttpClient(socket, socket.getOutputStream());
-        // WAV 头
-        byte[] hdr = buildWavHeader(sampleRate, channels, 16);
-        client.out.write(hdr);
-        client.out.flush();
+        OutputStream out = socket.getOutputStream();
+        // ⚠️ 修复：先发 HTTP 响应头，再发 WAV 头。此前直接写 RIFF 头，客户端解析不了
+        sendStreamHeaders(out, "audio/wav");
+        HttpClient client = new HttpClient(socket, out);
+        out.write(buildWavHeader(sampleRate, channels, 16));
+        out.flush();
         clients.add(client);
+        Util.log("Http", "WAV client connected: " + socket.getRemoteSocketAddress()
+                + " " + sampleRate + "Hz/" + channels + "ch");
         pump(client);
     }
 
     /** ADTS AAC 流 */
     private void streamAac(Socket socket) throws IOException {
-        HttpClient client = new HttpClient(socket, socket.getOutputStream());
+        OutputStream out = socket.getOutputStream();
+        sendStreamHeaders(out, "audio/aac");
+        HttpClient client = new HttpClient(socket, out);
         clients.add(client);
+        Util.log("Http", "AAC client connected: " + socket.getRemoteSocketAddress());
         pump(client);
     }
 
     /** 裸 OPUS 帧流（experimental：请优先使用 Android 接收端 App 或切 AAC/PCM 供 PC 播放） */
     private void streamOpus(Socket socket) throws IOException {
-        HttpClient client = new HttpClient(socket, socket.getOutputStream());
+        OutputStream out = socket.getOutputStream();
+        // 裸 OPUS + 2 字节长度前缀不是标准容器，VLC 无法直接播放，如实声明为二进制流
+        sendStreamHeaders(out, "application/octet-stream");
+        HttpClient client = new HttpClient(socket, out);
         clients.add(client);
+        Util.log("Http", "OPUS client connected (raw frames, VLC 不支持): " + socket.getRemoteSocketAddress());
         pump(client);
     }
 

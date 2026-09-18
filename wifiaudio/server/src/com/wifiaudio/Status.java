@@ -26,6 +26,9 @@ public final class Status {
     public static volatile String clientsList = "";
     public static volatile long encoderFrames = 0;
     public static volatile boolean encoderActive = false;
+    public static volatile long mixerDrops = 0;      // 分发队列溢出丢弃的帧数（v4.18）
+    public static volatile int mixerQueueFrames = 0; // 当前分发队列深度（帧）
+    public static volatile long mixerDispatchUs = 0; // 最近一次分发给全部 Sink 的耗时（微秒）
 
     private static String statusFile;
 
@@ -60,6 +63,9 @@ public final class Status {
             o.put("clientsList", clientsList);
             o.put("encoderFrames", encoderFrames);
             o.put("encoderActive", encoderActive);
+            o.put("mixerDrops", mixerDrops);
+            o.put("mixerQueueFrames", mixerQueueFrames);
+            o.put("mixerDispatchUs", mixerDispatchUs);
             o.put("ip", Util.getLocalIp());
             o.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0);
         } catch (Exception ignored) {
@@ -91,6 +97,9 @@ public final class Status {
             o.put("clientsList", clientsList);
             o.put("encoderFrames", encoderFrames);
             o.put("encoderActive", encoderActive);
+            o.put("mixerDrops", mixerDrops);
+            o.put("mixerQueueFrames", mixerQueueFrames);
+            o.put("mixerDispatchUs", mixerDispatchUs);
             o.put("ip", Util.getLocalIp());
             o.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0);
         } catch (Exception ignored) {

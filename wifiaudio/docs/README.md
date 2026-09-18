@@ -128,6 +128,7 @@ build/
 | 无声音 | 先点「🔊 测试音」验证扬声器；看统计「解码输出」是否增长；「🔍 诊断」查服务端编码器输出 |
 | OPUS/AAC 无声音 | 检查统计「解码输出」；App 日志（`Android/data/com.wifiaudio.receiver/files/wifiaudio.log`）；JNI 日志 `adb logcat -s AacSoft -d` / `-s OpusSoft` |
 | 声音断续 | 加大缓冲（音乐模式/自定义毫秒）；检查 WiFi |
+| PC（VLC）打不开 `/stream` | v4.18 起 HTTP 流已带标准响应头（`Content-Type: audio/wav` + `Connection: close`）；若为老版本请升级模块。编码须为 **PCM** 才能用 `/stream`，AAC 用 `/stream.aac`（不匹配会返回 409 提示） |
 | 蜂窝通话无声音 | 通话捕获需在配置中开启且设备 HAL 支持（尽力而为） |
 
 ## 🛠 从源码构建
@@ -157,6 +158,7 @@ bash receiver/build_apk.sh          # → build/WifiAudioReceiver.apk
 
 | 版本 | 里程碑 |
 |---|---|
+| v4.18 | **HTTP 流响应头修复**（`/stream` 直接发裸 WAV → VLC 识别不了）；**Mixer 线程解耦**（编码器/UDP 不再阻塞音频捕获）；编码不匹配改报 409；队列溢出计数 `mixerDrops`；三端版本号 4.18/418 |
 | v2.19 | AAC 双模式兼容（长度前缀/ADTS 自动识别） |
 | v2.18 | AAC TCP 流加长度前缀（解决 ADTS 假同步） |
 | v2.17 | fdk-aac 软解接入成功（NDK clang 编译） |

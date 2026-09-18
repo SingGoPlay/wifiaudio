@@ -14,7 +14,7 @@
 | ⚡ UDP / TCP 可选 | UDP 更低延迟；TCP 可靠稳定（发送端决定，接收端自动跟随） |
 | 🔬 **高采样率 PCM** | 支持 48k / 96k / 192kHz（自动跟随设备输出能力，Hi-Res 直通） |
 | 📡 多端同时接收 | 局域网广播，多个接收端可同时连接 |
-| 🌐 WebUI 配置 | KernelSU 原生 WebUI / Magisk 配 MMRL |
+| 📱 管理器配置 | 发射端所有配置用 **WiFiAudio 管理器 App** 完成（root 直连，KernelSU/Magisk 通用） |
 | 🎛️ 预设系统 | 4 个系统预设 + 自定义预设（支持中文名） |
 | 📊 实时统计 | 协议/编码/采样/码率/缓冲/**实时延迟**/跳帧/下溢（接收端每秒刷新） |
 | 🔊 测试音 | 1kHz 正弦波验证扬声器链路 |
@@ -34,7 +34,7 @@ release/
 ## 🚀 快速上手
 
 1. 发送端手机刷 `wifiaudio-ksu.zip` → 重启
-2. 管理 App 或 WebUI 开启「启用广播」
+2. 管理 App 开启「启用广播」
 3. 接收端装 `WifiAudioReceiver.apk` → 自动发现或填 IP → 连接 → 出声
 4. PC 播放：VLC 打开 `http://<发送端IP>:47801/stream`
 
@@ -46,7 +46,7 @@ release/
 │  AudioPolicy loopback (Android 13+ 官方API, root 反射)        │
 │   ├─ 匹配所有 usage + VoIP 通话捕获                           │
 │   └─ ROUTE_FLAG_LOOP_BACK[_RENDER] → 48k/96k/192k PCM         │
-│  Mixer（捕获线程入队 + 分发）                                  │
+│  Mixer（捕获线程同步分发 → 各 Sink）                          │
 │        ├─► TCP 流服务器 (47800, 裸 PCM)                       │
 │        ├─► UDP 流服务器 (48800, seq + PCM)                    │
 │        ├─► HTTP 流 (47801, WAV 头, VLC/浏览器)                │
@@ -105,6 +105,7 @@ gradle :receiver:assembleRelease :manager:assembleRelease
 
 | 版本 | 里程碑 |
 |---|---|
+| v4.18 | 修复 HTTP 流缺响应头（PC/VLC 打不开 `/stream`）；Mixer 线程解耦（编码/UDP 不再阻塞捕获）；编码不匹配返回 409 |
 | v4.x | Kotlin + Compose + miuix 重构；自适应缓冲（欠载驱动）；AAudio exclusive；高采样率 PCM；URL/端口转发支持 |
 | v3.x | AAC 双模式、fdk-aac 软解、libopus 软解、配置迁移 |
 | v2.x | OPUS 软解成功、配置迁移 |

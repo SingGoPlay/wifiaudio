@@ -6,7 +6,7 @@
 set -e
 TOKEN=${GH_TOKEN:?请设置 GH_TOKEN 环境变量（GitHub Personal Access Token）}
 REPO="SingGoPlay/wifiaudio"
-TAG="${1:-v4.13}"
+TAG="${1:-v4.18}"
 BODY="${2:-WiFiAudio 发行版}"
 cd "$(dirname "$0")"
 
