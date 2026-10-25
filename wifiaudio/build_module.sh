@@ -1,22 +1,19 @@
 #!/bin/bash
-# 打包 WiFiAudio KernelSU 模块
+# 打包发送端 KernelSU/Magisk 刷机包（还原自 v3.9 产物结构）
+# 结构：install.sh + common/service.sh + META-INF/update-binary（Magisk 标准刷机包）
 set -e
 cd "$(dirname "$0")"
 
-rm -rf build/module && mkdir -p build/module
-cp -r module/* build/module/
-rm -rf build/module/log
+[ -f module/bin/wifiaudio.jar ] || { echo "缺少 module/bin/wifiaudio.jar，请先运行 build_server.sh"; exit 1; }
 
-# 确保服务 jar 存在
-[ -f build/module/bin/wifiaudio.jar ] || { echo "缺少 wifiaudio.jar，请先运行 server/build.sh"; exit 1; }
+# 修正 CRLF 与权限
+find module -type f -name "*.sh" -exec sed -i 's/\r$//' {} \;
+find module/META-INF -type f -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
+chmod 0755 module/bin/wifiaudio.sh module/common/service.sh module/install.sh module/uninstall.sh
 
-# 修正换行与权限
-find build/module -type f -name "*.sh" -exec sed -i 's/\r$//' {} \;
-chmod 0755 build/module/bin/wifiaudio.sh build/module/service.sh build/module/customize.sh build/module/uninstall.sh
+OUT=wifiaudio-ksu-v3.9.zip
+rm -f "$OUT"
+( cd module && zip -r -9 "../$OUT" . > /dev/null )
 
-cd build/module
-rm -f ../wifiaudio-ksu.zip
-zip -r -9 ../wifiaudio-ksu.zip . > /dev/null
-cd ..
-echo "OK -> build/wifiaudio-ksu.zip ($(stat -c%s wifiaudio-ksu.zip) bytes)"
-unzip -l wifiaudio-ksu.zip
+echo "OK -> $OUT ($(stat -c%s "$OUT") bytes)"
+unzip -l "$OUT"

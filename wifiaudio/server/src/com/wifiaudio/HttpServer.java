@@ -1,5 +1,6 @@
 package com.wifiaudio;
 
+import com.wifiaudio.Mixer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -7,350 +8,317 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * HTTP 音频流服务器 —— 供 PC 直接播放（VLC / ffplay / 浏览器）：
- *   GET /             说明页
- *   GET /stream        WAV 头 + PCM 流 (audio/wav)
- *   GET /stream.aac    ADTS AAC 流 (audio/aac)
- *   GET /status        JSON 状态
- */
+/* loaded from: classes.dex */
 public final class HttpServer implements Mixer.Sink {
-
-    private final int port;
-    private final int codecType; // 0=PCM 1=AAC 2=OPUS
-    private final int sampleRate;
+    private static final String SERVER_ID = "WiFiAudio/4.19";
+    private Thread acceptThread;
     private final int channels;
+    private final int port;
+    private final int sampleRate;
     private ServerSocket serverSocket;
     private volatile boolean running = false;
-    private Thread acceptThread;
-    private final List<HttpClient> clients = new CopyOnWriteArrayList<HttpClient>();
+    private final List<HttpClient> clients = new CopyOnWriteArrayList();
 
     private static final class HttpClient {
-        final Socket socket;
         final OutputStream out;
-        final java.util.concurrent.ArrayBlockingQueue<byte[]> queue = new java.util.concurrent.ArrayBlockingQueue<byte[]>(120);
+        final Socket socket;
+        final ArrayBlockingQueue<byte[]> queue = new ArrayBlockingQueue<>(120);
         volatile boolean closed = false;
 
-        HttpClient(Socket socket, OutputStream out) {
+        HttpClient(Socket socket, OutputStream outputStream) {
             this.socket = socket;
-            this.out = out;
+            this.out = outputStream;
         }
     }
 
-    public HttpServer(int port, int codecType, int sampleRate, int channels) {
-        this.port = port;
-        this.codecType = codecType;
-        this.sampleRate = sampleRate;
-        this.channels = channels;
+    public HttpServer(int i, int i2, int i3) {
+        this.port = i;
+        this.sampleRate = i2;
+        this.channels = i3;
     }
 
     public void start() throws IOException {
-        serverSocket = new ServerSocket(port);
-        running = true;
-        acceptThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                acceptLoop();
+        this.serverSocket = new ServerSocket(this.port);
+        this.running = true;
+        Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.HttpServer.1
+            @Override // java.lang.Runnable
+            public void run() throws IOException {
+                HttpServer.this.acceptLoop();
             }
         }, "http-accept");
-        acceptThread.start();
-        Util.log("Http", "HTTP stream server listening on port " + port
-                + " codec=" + (codecType == 1 ? "aac" : (codecType == 2 ? "opus" : "pcm")));
+        this.acceptThread = thread;
+        thread.start();
+        Util.log("Http", "HTTP stream server listening on port " + this.port + " (PCM16 WAV)");
     }
 
-    private void acceptLoop() {
-        while (running) {
+    /* JADX INFO: Access modifiers changed from: private */
+    public void acceptLoop() throws IOException {
+        while (this.running) {
             try {
-                Socket socket = serverSocket.accept();
-                Thread t = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        handle(socket);
+                final Socket socketAccept = this.serverSocket.accept();
+                new Thread(new Runnable() { // from class: com.wifiaudio.HttpServer.2
+                    @Override // java.lang.Runnable
+                    public void run() throws IOException {
+                        HttpServer.this.handle(socketAccept);
                     }
-                }, "http-client");
-                t.start();
+                }, "http-client").start();
             } catch (IOException e) {
-                if (running) Util.log("Http", "accept error: " + Util.causeMsg(e));
+                if (this.running) {
+                    Util.log("Http", "accept error: " + Util.causeMsg(e));
+                }
             }
         }
     }
 
-    private void handle(Socket socket) {
-        InputStream in = null;
+    /* JADX INFO: Access modifiers changed from: private */
+    public void handle(Socket socket) throws IOException {
+        byte[] bArr;
+        int iIndexOf;
         try {
             socket.setSoTimeout(5000);
-            in = socket.getInputStream();
-            // 读请求行和头（最多 8KB）
-            byte[] buf = new byte[8192];
-            int total = 0;
-            int idx = -1;
-            while (total < buf.length) {
-                int n = in.read(buf, total, buf.length - total);
-                if (n < 0) return;
-                total += n;
-                String s = new String(buf, 0, total, StandardCharsets.ISO_8859_1);
-                idx = s.indexOf("\r\n\r\n");
-                if (idx >= 0) break;
+            InputStream inputStream = socket.getInputStream();
+            bArr = new byte[8192];
+            iIndexOf = -1;
+            int i = 0;
+            while (i < 8192) {
+                int i2 = inputStream.read(bArr, i, 8192 - i);
+                if (i2 < 0) {
+                    try {
+                        socket.close();
+                        return;
+                    } catch (IOException unused) {
+                        return;
+                    }
+                } else {
+                    i += i2;
+                    iIndexOf = new String(bArr, 0, i, StandardCharsets.ISO_8859_1).indexOf("\r\n\r\n");
+                    if (iIndexOf >= 0) {
+                        break;
+                    }
+                }
             }
-            if (idx < 0) return;
-            String request = new String(buf, 0, idx, StandardCharsets.ISO_8859_1);
-            String[] lines = request.split("\r\n");
-            if (lines.length == 0) return;
-            String[] parts = lines[0].split(" ");
-            if (parts.length < 2) return;
-            String path = parts[1];
-
-            socket.setSoTimeout(0);
-
-            if ("/".equals(path)) {
-                sendText(socket, 200, "text/html; charset=utf-8", indexHtml(port));
-            } else if ("/status".equals(path)) {
-                sendText(socket, 200, "application/json", Status.toJson());
-            } else if ("/stream".equals(path) || "/stream.wav".equals(path)) {
-                if (codecType != 0) {
-                    // 发射端不是 PCM：别发一个没有数据的 WAV 流让播放器傻等，明确报错
-                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("pcm"));
-                } else {
-                    streamWav(socket);
-                }
-            } else if ("/stream.aac".equals(path)) {
-                if (codecType != 1) {
-                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("aac"));
-                } else {
-                    streamAac(socket);
-                }
-            } else if ("/stream.opus".equals(path)) {
-                if (codecType != 2) {
-                    sendText(socket, 409, "text/plain; charset=utf-8", codecMismatchHint("opus"));
-                } else {
-                    streamOpus(socket);
-                }
-            } else {
-                sendText(socket, 404, "text/plain; charset=utf-8", "Not found. Try /stream, /stream.aac, /status");
-            }
-        } catch (IOException ignored) {
-            // 客户端断开
-        } finally {
+        } catch (IOException unused2) {
+        } catch (Throwable th) {
             try {
                 socket.close();
-            } catch (IOException ignored) {
+            } catch (IOException unused3) {
+            }
+            throw th;
+        }
+        if (iIndexOf < 0) {
+            try {
+                socket.close();
+                return;
+            } catch (IOException unused4) {
+                return;
             }
         }
-    }
-
-    private static final String SERVER_ID = "WiFiAudio/4.18";
-
-    private static String reason(int code) {
-        switch (code) {
-            case 200: return "OK";
-            case 206: return "Partial Content";
-            case 400: return "Bad Request";
-            case 404: return "Not Found";
-            case 405: return "Method Not Allowed";
-            case 409: return "Conflict";
-            default: return "OK";
+        String[] strArrSplit = new String(bArr, 0, iIndexOf, StandardCharsets.ISO_8859_1).split("\r\n");
+        if (strArrSplit.length == 0) {
+            try {
+                socket.close();
+                return;
+            } catch (IOException unused5) {
+                return;
+            }
+        }
+        String[] strArrSplit2 = strArrSplit[0].split(" ");
+        if (strArrSplit2.length < 2) {
+            try {
+                socket.close();
+                return;
+            } catch (IOException unused6) {
+                return;
+            }
+        }
+        String str = strArrSplit2[1];
+        socket.setSoTimeout(0);
+        if ("/".equals(str)) {
+            sendText(socket, 200, "text/html; charset=utf-8", indexHtml(this.port));
+        } else if ("/status".equals(str)) {
+            sendText(socket, 200, "application/json", Status.toJson());
+        } else if ("/stream".equals(str) || "/stream.wav".equals(str)) {
+            streamWav(socket);
+        } else {
+            sendText(socket, 404, "text/plain; charset=utf-8", "Not found. Try /stream or /status");
+        }
+        try {
+            socket.close();
+        } catch (IOException unused7) {
         }
     }
 
-    private void sendText(Socket socket, int code, String type, String body) throws IOException {
-        OutputStream out = socket.getOutputStream();
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        StringBuilder sb = new StringBuilder();
-        sb.append("HTTP/1.1 ").append(code).append(' ').append(reason(code)).append("\r\n");
-        sb.append("Server: ").append(SERVER_ID).append("\r\n");
-        sb.append("Content-Type: ").append(type).append("\r\n");
-        sb.append("Content-Length: ").append(data.length).append("\r\n");
-        sb.append("Cache-Control: no-cache\r\n");
-        sb.append("Connection: close\r\n\r\n");
-        out.write(sb.toString().getBytes(StandardCharsets.ISO_8859_1));
-        out.write(data);
-        out.flush();
+    private static String reason(int i) {
+        if (i == 206) {
+            return "Partial Content";
+        }
+        if (i == 400) {
+            return "Bad Request";
+        }
+        if (i == 409) {
+            return "Conflict";
+        }
+        if (i == 404) {
+            return "Not Found";
+        }
+        if (i == 405) {
+            return "Method Not Allowed";
+        }
+        return "OK";
     }
 
-    /**
-     * 直播流响应头。
-     * 关键：实时流长度未知，不发送 Content-Length，也不做 chunked ——
-     * 属于 HTTP/1.1 的 "close-delimited" 消息（RFC 7230 §3.3.3 第 7 类），
-     * 所以必须带 Connection: close，播放器持续读到连接关闭为止（VLC/ffplay/浏览器通用）。
-     */
-    private void sendStreamHeaders(OutputStream out, String contentType) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("HTTP/1.1 200 OK\r\n");
-        sb.append("Server: ").append(SERVER_ID).append("\r\n");
-        sb.append("Content-Type: ").append(contentType).append("\r\n");
-        sb.append("Cache-Control: no-cache, no-store\r\n");
-        sb.append("Pragma: no-cache\r\n");
-        sb.append("Accept-Ranges: none\r\n");
-        sb.append("Connection: close\r\n\r\n");
-        out.write(sb.toString().getBytes(StandardCharsets.ISO_8859_1));
-        out.flush();
+    private void sendText(Socket socket, int i, String str, String str2) throws IOException {
+        OutputStream outputStream = socket.getOutputStream();
+        byte[] bytes = str2.getBytes(StandardCharsets.UTF_8);
+        outputStream.write(("HTTP/1.1 " + i + ' ' + reason(i) + "\r\nServer: WiFiAudio/4.19\r\nContent-Type: " + str + "\r\nContent-Length: " + bytes.length + "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        outputStream.write(bytes);
+        outputStream.flush();
     }
 
-    private String codecName() {
-        return codecType == 1 ? "aac" : (codecType == 2 ? "opus" : "pcm");
+    private void sendStreamHeaders(OutputStream outputStream, String str) throws IOException {
+        outputStream.write(("HTTP/1.1 200 OK\r\nServer: WiFiAudio/4.19\r\nContent-Type: " + str + "\r\nCache-Control: no-cache, no-store\r\nPragma: no-cache\r\nAccept-Ranges: none\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+        outputStream.flush();
     }
 
-    private String codecMismatchHint(String requested) {
-        String alt = codecType == 1 ? "/stream.aac" : (codecType == 2 ? "/stream.opus" : "/stream");
-        return "该流不可用：发射端当前编码为 " + codecName() + "。\n"
-                + "请改用 " + alt + "，或在管理器 App 中把编码切换为 " + requested + "。\n";
-    }
-
-    /** WAV + 连续 PCM 流 */
     private void streamWav(Socket socket) throws IOException {
-        OutputStream out = socket.getOutputStream();
-        // ⚠️ 修复：先发 HTTP 响应头，再发 WAV 头。此前直接写 RIFF 头，客户端解析不了
-        sendStreamHeaders(out, "audio/wav");
-        HttpClient client = new HttpClient(socket, out);
-        out.write(buildWavHeader(sampleRate, channels, 16));
-        out.flush();
-        clients.add(client);
-        Util.log("Http", "WAV client connected: " + socket.getRemoteSocketAddress()
-                + " " + sampleRate + "Hz/" + channels + "ch");
-        pump(client);
+        OutputStream outputStream = socket.getOutputStream();
+        sendStreamHeaders(outputStream, "audio/wav");
+        HttpClient httpClient = new HttpClient(socket, outputStream);
+        outputStream.write(buildWavHeader(this.sampleRate, this.channels, 16));
+        outputStream.flush();
+        this.clients.add(httpClient);
+        Util.log("Http", "WAV client connected: " + socket.getRemoteSocketAddress() + " " + this.sampleRate + "Hz/" + this.channels + "ch");
+        pump(httpClient);
     }
 
-    /** ADTS AAC 流 */
-    private void streamAac(Socket socket) throws IOException {
-        OutputStream out = socket.getOutputStream();
-        sendStreamHeaders(out, "audio/aac");
-        HttpClient client = new HttpClient(socket, out);
-        clients.add(client);
-        Util.log("Http", "AAC client connected: " + socket.getRemoteSocketAddress());
-        pump(client);
-    }
-
-    /** 裸 OPUS 帧流（experimental：请优先使用 Android 接收端 App 或切 AAC/PCM 供 PC 播放） */
-    private void streamOpus(Socket socket) throws IOException {
-        OutputStream out = socket.getOutputStream();
-        // 裸 OPUS + 2 字节长度前缀不是标准容器，VLC 无法直接播放，如实声明为二进制流
-        sendStreamHeaders(out, "application/octet-stream");
-        HttpClient client = new HttpClient(socket, out);
-        clients.add(client);
-        Util.log("Http", "OPUS client connected (raw frames, VLC 不支持): " + socket.getRemoteSocketAddress());
-        pump(client);
-    }
-
-    private void pump(HttpClient client) {
-        try {
-            while (running && !client.closed) {
-                byte[] frame = client.queue.take();
-                client.out.write(frame);
-                client.out.flush();
-                Status.bytesSent += frame.length;
-            }
-        } catch (InterruptedException ignored) {
-        } catch (IOException e) {
-            // 断开
-        } finally {
-            client.closed = true;
-            clients.remove(client);
+    private void pump(HttpClient httpClient) throws IOException {
+        Socket socket;
+        while (this.running && !httpClient.closed) {
             try {
-                client.socket.close();
-            } catch (IOException ignored) {
+                try {
+                    try {
+                        httpClient.out.write(httpClient.queue.take());
+                        httpClient.out.flush();
+                        Status.bytesSent += r3.length;
+                    } catch (InterruptedException unused) {
+                        httpClient.closed = true;
+                        this.clients.remove(httpClient);
+                        socket = httpClient.socket;
+                    }
+                } catch (IOException unused2) {
+                    httpClient.closed = true;
+                    this.clients.remove(httpClient);
+                    socket = httpClient.socket;
+                } catch (Throwable th) {
+                    httpClient.closed = true;
+                    this.clients.remove(httpClient);
+                    try {
+                        httpClient.socket.close();
+                    } catch (IOException unused3) {
+                    }
+                    Util.log("Http", "stream client disconnected");
+                    throw th;
+                }
+            } catch (IOException unused4) {
             }
-            Util.log("Http", "stream client disconnected");
+        }
+        httpClient.closed = true;
+        this.clients.remove(httpClient);
+        socket = httpClient.socket;
+        socket.close();
+        Util.log("Http", "stream client disconnected");
+    }
+
+    @Override // com.wifiaudio.Mixer.Sink
+    public void onPcm(byte[] bArr, int i) {
+        if (!this.running || this.clients.isEmpty()) {
+            return;
+        }
+        int i2 = i * 2 * this.channels;
+        byte[] bArr2 = new byte[i2];
+        System.arraycopy(bArr, 0, bArr2, 0, i2);
+        push(bArr2);
+    }
+
+    private void push(byte[] bArr) {
+        for (HttpClient httpClient : this.clients) {
+            if (!httpClient.closed && !httpClient.queue.offer(bArr)) {
+                httpClient.queue.poll();
+                httpClient.queue.offer(bArr);
+            }
         }
     }
 
-    @Override
-    public void onPcm(byte[] pcm, int frames) {
-        if (!running || clients.isEmpty() || codecType != 0) return;
-        int bytes = frames * 2 * channels;
-        byte[] copy = new byte[bytes];
-        System.arraycopy(pcm, 0, copy, 0, bytes);
-        push(copy);
-    }
-
-    /** AAC 帧回调 */
-    public void onAac(byte[] adts, int len) {
-        if (!running || clients.isEmpty() || codecType != 1) return;
-        byte[] copy = new byte[len];
-        System.arraycopy(adts, 0, copy, 0, len);
-        push(copy);
-    }
-
-    /** OPUS 帧回调（HTTP 流，带 2 字节大端长度前缀以便切帧） */
-    public void onOpus(byte[] frame, int len) {
-        if (!running || clients.isEmpty() || codecType != 2) return;
-        byte[] copy = new byte[len + 2];
-        copy[0] = (byte) (len >> 8);
-        copy[1] = (byte) len;
-        System.arraycopy(frame, 0, copy, 2, len);
-        push(copy);
-    }
-
-    private void push(byte[] frame) {
-        for (HttpClient c : clients) {
-            if (c.closed) continue;
-            if (!c.queue.offer(frame)) {
-                c.queue.poll();
-                c.queue.offer(frame);
-            }
-        }
-    }
-
-    public void stop() {
-        running = false;
+    public void stop() throws IOException {
+        this.running = false;
         try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (IOException ignored) {
+            ServerSocket serverSocket = this.serverSocket;
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+        } catch (IOException unused) {
         }
-        for (HttpClient c : clients) {
-            c.closed = true;
+        for (HttpClient httpClient : this.clients) {
+            httpClient.closed = true;
             try {
-                c.socket.close();
-            } catch (IOException ignored) {
+                httpClient.socket.close();
+            } catch (IOException unused2) {
             }
         }
-        clients.clear();
-        if (acceptThread != null) {
-            acceptThread.interrupt();
-            acceptThread = null;
+        this.clients.clear();
+        Thread thread = this.acceptThread;
+        if (thread != null) {
+            thread.interrupt();
+            this.acceptThread = null;
         }
     }
 
-    private static byte[] buildWavHeader(int sampleRate, int channels, int bits) {
-        int byteRate = sampleRate * channels * bits / 8;
-        int blockAlign = channels * bits / 8;
-        byte[] h = new byte[44];
-        h[0] = 'R'; h[1] = 'I'; h[2] = 'F'; h[3] = 'F';
-        putIntLE(h, 4, 0xFFFFFFFF); // 未知大小
-        h[8] = 'W'; h[9] = 'A'; h[10] = 'V'; h[11] = 'E';
-        h[12] = 'f'; h[13] = 'm'; h[14] = 't'; h[15] = ' ';
-        putIntLE(h, 16, 16);          // fmt chunk size
-        putShortLE(h, 20, 1);         // PCM
-        putShortLE(h, 22, channels);
-        putIntLE(h, 24, sampleRate);
-        putIntLE(h, 28, byteRate);
-        putShortLE(h, 32, blockAlign);
-        putShortLE(h, 34, bits);
-        h[36] = 'd'; h[37] = 'a'; h[38] = 't'; h[39] = 'a';
-        putIntLE(h, 40, 0xFFFFFFFF);
-        return h;
+    private static byte[] buildWavHeader(int i, int i2, int i3) {
+        byte[] bArr = new byte[44];
+        bArr[0] = 82;
+        bArr[1] = 73;
+        bArr[2] = 70;
+        bArr[3] = 70;
+        putIntLE(bArr, 4, -1);
+        bArr[8] = 87;
+        bArr[9] = 65;
+        bArr[10] = 86;
+        bArr[11] = 69;
+        bArr[12] = 102;
+        bArr[13] = 109;
+        bArr[14] = 116;
+        bArr[15] = 32;
+        putIntLE(bArr, 16, 16);
+        putShortLE(bArr, 20, 1);
+        putShortLE(bArr, 22, i2);
+        putIntLE(bArr, 24, i);
+        putIntLE(bArr, 28, ((i * i2) * i3) / 8);
+        putShortLE(bArr, 32, (i2 * i3) / 8);
+        putShortLE(bArr, 34, i3);
+        bArr[36] = 100;
+        bArr[37] = 97;
+        bArr[38] = 116;
+        bArr[39] = 97;
+        putIntLE(bArr, 40, -1);
+        return bArr;
     }
 
-    private static void putIntLE(byte[] b, int off, int v) {
-        b[off] = (byte) (v & 0xFF);
-        b[off + 1] = (byte) ((v >> 8) & 0xFF);
-        b[off + 2] = (byte) ((v >> 16) & 0xFF);
-        b[off + 3] = (byte) ((v >> 24) & 0xFF);
+    private static void putIntLE(byte[] bArr, int i, int i2) {
+        bArr[i] = (byte) (i2 & 255);
+        bArr[i + 1] = (byte) ((i2 >> 8) & 255);
+        bArr[i + 2] = (byte) ((i2 >> 16) & 255);
+        bArr[i + 3] = (byte) ((i2 >> 24) & 255);
     }
 
-    private static void putShortLE(byte[] b, int off, int v) {
-        b[off] = (byte) (v & 0xFF);
-        b[off + 1] = (byte) ((v >> 8) & 0xFF);
+    private static void putShortLE(byte[] bArr, int i, int i2) {
+        bArr[i] = (byte) (i2 & 255);
+        bArr[i + 1] = (byte) ((i2 >> 8) & 255);
     }
 
-    private static String indexHtml(int port) {
-        return "<html><head><title>WiFiAudio</title></head><body style=\"font-family:sans-serif\">"
-                + "<h2>WiFiAudio 音频流</h2>"
-                + "<ul>"
-                + "<li><a href=\"/stream\">/stream</a> — WAV PCM 流 (VLC: 打开网络串流 <code>http://ip:" + port + "/stream</code>)</li>"
-                + "<li><a href=\"/stream.aac\">/stream.aac</a> — AAC 流 (VLC: <code>http://ip:" + port + "/stream.aac</code>)</li>"
-                + "<li><a href=\"/status\">/status</a> — 状态 JSON</li>"
-                + "</ul></body></html>";
+    private static String indexHtml(int i) {
+        return "<html><head><title>WiFiAudio</title></head><body style=\"font-family:sans-serif\"><h2>WiFiAudio 音频流</h2><ul><li><a href=\"/stream\">/stream</a> — WAV PCM 流 (VLC: 打开网络串流 <code>http://ip:" + i + "/stream</code>)</li><li><a href=\"/status\">/status</a> — 状态 JSON</li></ul></body></html>";
     }
 }

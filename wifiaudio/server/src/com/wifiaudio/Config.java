@@ -1,87 +1,99 @@
 package com.wifiaudio;
 
+import java.io.File;
 import org.json.JSONObject;
 
-/**
- * 配置管理。配置存放在用户可访问目录 /storage/emulated/0/WiFiAudio/config.json（JSON 格式）。
- * 所有配置均可在 WiFiAudio 管理器 App 中修改（root 直连，wifiaudio.sh set-all）。
- */
+/* loaded from: classes.dex */
 public final class Config {
-
-    /** 配置文件路径（用户可访问，管理器/脚本直接读写） */
     public static final String CONFIG_PATH = "/storage/emulated/0/WiFiAudio/config.json";
-
     private JSONObject json = new JSONObject();
     private final String path;
 
-    public Config(String path) {
-        this.path = path;
+    public Config(String str) {
+        this.path = str;
         reload();
     }
 
     public synchronized void reload() {
         try {
-            String content = Util.readFile(path);
-            if (content == null || content.trim().isEmpty()) {
-                // 尝试默认位置（config.json）
-                content = Util.readFile(CONFIG_PATH);
+            String file = Util.readFile(this.path);
+            if (file == null || file.trim().isEmpty()) {
+                file = Util.readFile(CONFIG_PATH);
             }
-            if (content != null && !content.trim().isEmpty()) {
-                json = new JSONObject(content);
+            if (file != null && !file.trim().isEmpty()) {
+                this.json = new JSONObject(file);
             } else {
-                json = new JSONObject();
+                this.json = new JSONObject();
             }
         } catch (Exception e) {
             Util.log("Config", "reload failed, using defaults: " + Util.causeMsg(e));
-            json = new JSONObject();
+            this.json = new JSONObject();
         }
     }
 
-    private String get(String key, String def) {
-        return json.optString(key, def);
+    private String get(String str, String str2) {
+        return this.json.optString(str, str2);
     }
 
-    public boolean isEnabled() { return "1".equals(get("enabled", "0")); }
-    public boolean localRender() { return "1".equals(get("local_render", "0")); }
-    public int tcpPort() { return parseInt(get("tcp_port", "47800"), 47800); }
-    public int httpPort() { return parseInt(get("http_port", "47801"), 47801); }
-    public boolean useAac() { return "aac".equalsIgnoreCase(get("codec", "pcm")); }
-    public boolean useOpus() { return "opus".equalsIgnoreCase(get("codec", "pcm")); }
-    public int aacBitrate() { return parseInt(get("aac_bitrate", "192"), 192); }
-    public int opusBitrate() { return parseInt(get("opus_bitrate", "128"), 128); }
-    public boolean captureCall() { return "1".equals(get("capture_call", "0")); }
-    /** 自动关闭分钟数（0=不自动关） */
-    public int autoOffMinutes() { return parseInt(get("auto_off_min", "0"), 0); }
-    /** 游戏模式: 低延迟 (接收端应使用小缓冲, 且优先 UDP) */
-    public boolean gameMode() { return "game".equalsIgnoreCase(get("mode", "music")); }
-    /** 传输协议: true=UDP */
-    public boolean useUdp() { return "udp".equalsIgnoreCase(get("transport", "tcp")); }
-    /** PCM 采样率: auto=跟随设备输出能力(0) / 48000 / 96000 / 192000。仅 codec=pcm 时生效 */
+    public boolean isEnabled() {
+        return "1".equals(get("enabled", "0"));
+    }
+
+    public boolean localRender() {
+        return "1".equals(get("local_render", "0"));
+    }
+
+    public int tcpPort() {
+        return parseInt(get("tcp_port", "47800"), 47800);
+    }
+
+    public int httpPort() {
+        return parseInt(get("http_port", "47801"), 47801);
+    }
+
+    public boolean captureCall() {
+        return "1".equals(get("capture_call", "0"));
+    }
+
+    public int autoOffMinutes() {
+        return parseInt(get("auto_off_min", "0"), 0);
+    }
+
+    public boolean gameMode() {
+        return "game".equalsIgnoreCase(get("mode", "music"));
+    }
+
+    public boolean useUdp() {
+        return "udp".equalsIgnoreCase(get("transport", "tcp"));
+    }
+
     public int pcmRate() {
-        String v = get("pcm_rate", "auto").trim();
-        if ("auto".equalsIgnoreCase(v) || v.isEmpty()) return 0;
-        return parseInt(v, 0);
+        String strTrim = get("pcm_rate", "auto").trim();
+        if ("auto".equalsIgnoreCase(strTrim) || strTrim.isEmpty()) {
+            return 0;
+        }
+        return parseInt(strTrim, 0);
     }
 
-    private static int parseInt(String s, int def) {
+    private static int parseInt(String str, int i) throws NumberFormatException {
         try {
-            int v = Integer.parseInt(s.trim());
-            return v > 0 && v < 65536 ? v : def;
-        } catch (Exception e) {
-            return def;
+            int i2 = Integer.parseInt(str.trim());
+            return (i2 <= 0 || i2 >= 65536) ? i : i2;
+        } catch (Exception unused) {
+            return i;
         }
     }
 
-    public String getPath() { return path; }
+    public String getPath() {
+        return this.path;
+    }
 
-    /** 返回配置目录路径 (配置文件所在目录) */
     public String getDir() {
-        String dir = "/storage/emulated/0/WiFiAudio";
         try {
-            java.io.File f = new java.io.File(path);
-            if (f.getParent() != null) dir = f.getParent();
-        } catch (Exception ignored) {
+            File file = new File(this.path);
+            return file.getParent() != null ? file.getParent() : "/storage/emulated/0/WiFiAudio";
+        } catch (Exception unused) {
+            return "/storage/emulated/0/WiFiAudio";
         }
-        return dir;
     }
 }

@@ -4,72 +4,85 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 
-/**
- * 局域网发现：周期性向 255.255.255.255:47802 广播自身信息，
- * 接收端 App 监听该端口即可自动发现发送端。
- */
+/* loaded from: classes.dex */
 public final class DiscoveryServer {
-
     public static final int DISCOVERY_PORT = 47802;
-
-    private final int tcpPort;
     private volatile boolean running = false;
+    private final int tcpPort;
     private Thread thread;
 
-    public DiscoveryServer(int tcpPort) {
-        this.tcpPort = tcpPort;
+    public DiscoveryServer(int i) {
+        this.tcpPort = i;
     }
 
     public void start() {
-        running = true;
-        thread = new Thread(new Runnable() {
-            @Override
+        this.running = true;
+        Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.DiscoveryServer.1
+            @Override // java.lang.Runnable
             public void run() {
-                loop();
+                DiscoveryServer.this.loop();
             }
         }, "discovery");
+        this.thread = thread;
         thread.start();
-        Util.log("Disc", "发现广播已启动 (UDP " + DISCOVERY_PORT + ")");
+        Util.log("Disc", "发现广播已启动 (UDP 47802)");
     }
 
-    private void loop() {
-        DatagramSocket socket = null;
+    /* JADX INFO: Access modifiers changed from: private */
+    public void loop() {
+        DatagramSocket datagramSocket;
+        Throwable th;
         try {
-            socket = new DatagramSocket();
-            socket.setBroadcast(true);
-            byte[] payload = buildPayload();
-            InetAddress bc = InetAddress.getByName("255.255.255.255");
-            DatagramPacket pkt = new DatagramPacket(payload, payload.length, bc, DISCOVERY_PORT);
-            while (running) {
-                try {
-                    socket.send(pkt);
-                } catch (Throwable ignored) {
+            datagramSocket = new DatagramSocket();
+        } catch (Throwable th2) {
+            datagramSocket = null;
+            th = th2;
+        }
+        try {
+            try {
+                datagramSocket.setBroadcast(true);
+                byte[] bArrBuildPayload = buildPayload();
+                DatagramPacket datagramPacket = new DatagramPacket(bArrBuildPayload, bArrBuildPayload.length, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT);
+                while (this.running) {
+                    try {
+                        datagramSocket.send(datagramPacket);
+                    } catch (Throwable unused) {
+                    }
+                    Thread.sleep(3000L);
                 }
-                Thread.sleep(3000);
-            }
-        } catch (Throwable t) {
-            Util.log("Disc", "discovery error: " + Util.causeMsg(t));
-        } finally {
-            if (socket != null) {
+            } catch (Throwable th3) {
+                th = th3;
                 try {
-                    socket.close();
-                } catch (Throwable ignored) {
+                    Util.log("Disc", "discovery error: " + Util.causeMsg(th));
+                    if (datagramSocket == null) {
+                        return;
+                    }
+                    datagramSocket.close();
+                } catch (Throwable th4) {
+                    if (datagramSocket != null) {
+                        try {
+                            datagramSocket.close();
+                        } catch (Throwable unused2) {
+                        }
+                    }
+                    throw th4;
                 }
             }
+            datagramSocket.close();
+        } catch (Throwable unused3) {
         }
     }
 
     private byte[] buildPayload() {
-        // 简单文本: WFAU-DISCOVER|<ip>|<tcpPort>
-        String msg = "WFAU-DISCOVER|" + Util.getLocalIp() + "|" + tcpPort;
-        return msg.getBytes();
+        return ("WFAU-DISCOVER|" + Util.getLocalIp() + "|" + this.tcpPort).getBytes();
     }
 
     public void stop() {
-        running = false;
+        this.running = false;
+        Thread thread = this.thread;
         if (thread != null) {
             thread.interrupt();
-            thread = null;
+            this.thread = null;
         }
     }
 }

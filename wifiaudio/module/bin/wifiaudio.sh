@@ -23,10 +23,7 @@ write_default_config() {
   "transport": "tcp",
   "tcp_port": 47800,
   "http_port": 47801,
-  "codec": "pcm",
   "pcm_rate": "auto",
-  "aac_bitrate": 192,
-  "opus_bitrate": 128,
   "capture_call": 0
 }
 EOF

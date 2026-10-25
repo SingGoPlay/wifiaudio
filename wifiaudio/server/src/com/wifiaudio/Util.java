@@ -3,133 +3,198 @@ package com.wifiaudio;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Enumeration;
 import java.util.Locale;
+import java.util.concurrent.ArrayBlockingQueue;
 
-/** 小工具：日志、原子写文件、字节序转换 */
+/* loaded from: classes.dex */
 public final class Util {
-
+    private static String logFile;
+    private static volatile Thread logWriter;
     private static final SimpleDateFormat TS = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US);
-    private static String logFile; // 设置后日志同时写入文件
+    private static final ArrayBlockingQueue<String> LOG_Q = new ArrayBlockingQueue<>(AudioLoopbackCapture.MAX_READ_FRAMES);
 
-    private Util() {}
-
-    public static void setLogFile(String path) {
-        logFile = path;
+    private Util() {
     }
 
-    public static void log(String tag, String msg) {
-        String line = "[" + TS.format(new Date()) + "] [" + tag + "] " + msg;
-        System.out.println(line);
-        System.out.flush();
+    public static void setLogFile(String str) {
+        logFile = str;
+    }
+
+    private static void ensureLogWriter() {
+        if (logWriter != null) {
+            return;
+        }
+        synchronized (Util.class) {
+            if (logWriter != null) {
+                return;
+            }
+            Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.Util.1
+                @Override // java.lang.Runnable
+                public void run() throws IOException {
+                    while (true) {
+                        try {
+                            Util.writeLine((String) Util.LOG_Q.take());
+                        } catch (InterruptedException unused) {
+                            return;
+                        }
+                    }
+                }
+            }, "log-writer");
+            thread.setDaemon(true);
+            thread.start();
+            logWriter = thread;
+        }
+    }
+
+    /* JADX INFO: Access modifiers changed from: private */
+    public static void writeLine(String str) throws IOException {
+        try {
+            System.out.println(str);
+            System.out.flush();
+        } catch (Throwable unused) {
+        }
         if (logFile != null) {
             try {
-                FileOutputStream fos = new FileOutputStream(logFile, true);
-                fos.write((line + "\n").getBytes(StandardCharsets.UTF_8));
-                fos.close();
-            } catch (IOException ignored) {
+                FileOutputStream fileOutputStream = new FileOutputStream(logFile, true);
+                fileOutputStream.write((str + "\n").getBytes(StandardCharsets.UTF_8));
+                fileOutputStream.close();
+            } catch (IOException unused2) {
             }
         }
     }
 
-    public static void log(String tag, String msg, Throwable t) {
-        log(tag, msg + " :: " + String.valueOf(t));
-        if (t != null) {
-            Throwable c = t;
-            int depth = 0;
-            while (c != null && depth < 10) {
-                StringBuilder sb = new StringBuilder();
-                sb.append("Caused by: ").append(c).append('\n');
-                StackTraceElement[] st = c.getStackTrace();
-                int len = Math.min(st.length, 12);
-                for (int i = 0; i < len; i++) {
-                    sb.append("    at ").append(st[i]).append('\n');
+    public static void log(String str, String str2) {
+        String str3;
+        ensureLogWriter();
+        SimpleDateFormat simpleDateFormat = TS;
+        synchronized (simpleDateFormat) {
+            str3 = "[" + simpleDateFormat.format(new Date()) + "] [" + str + "] " + str2;
+        }
+        ArrayBlockingQueue<String> arrayBlockingQueue = LOG_Q;
+        if (arrayBlockingQueue.offer(str3)) {
+            return;
+        }
+        arrayBlockingQueue.poll();
+        arrayBlockingQueue.offer(str3);
+    }
+
+    public static void flushLog(long j) throws InterruptedException {
+        long jCurrentTimeMillis = System.currentTimeMillis() + j;
+        while (!LOG_Q.isEmpty() && System.currentTimeMillis() < jCurrentTimeMillis) {
+            try {
+                Thread.sleep(10L);
+            } catch (InterruptedException unused) {
+                return;
+            }
+        }
+    }
+
+    public static void log(String str, String str2, Throwable th) {
+        log(str, str2 + " :: " + String.valueOf(th));
+        if (th != null) {
+            for (int i = 0; th != null && i < 10; i++) {
+                StringBuilder sb = new StringBuilder("Caused by: ");
+                sb.append(th);
+                sb.append('\n');
+                StackTraceElement[] stackTrace = th.getStackTrace();
+                int iMin = Math.min(stackTrace.length, 12);
+                for (int i2 = 0; i2 < iMin; i2++) {
+                    sb.append("    at ");
+                    sb.append(stackTrace[i2]);
+                    sb.append('\n');
                 }
                 System.out.println(sb.toString());
-                c = c.getCause();
-                depth++;
+                th = th.getCause();
             }
         }
     }
 
-    /** 原子写文本文件（先写临时文件再 rename） */
-    public static boolean writeFileAtomic(String path, String content) {
+    public static boolean writeFileAtomic(String str, String str2) throws IOException {
         try {
-            File tmp = new File(path + ".tmp");
-            FileOutputStream fos = new FileOutputStream(tmp);
-            fos.write(content.getBytes(StandardCharsets.UTF_8));
-            fos.getFD().sync();
-            fos.close();
-            File dst = new File(path);
-            if (dst.exists()) {
-                dst.delete();
+            File file = new File(str + ".tmp");
+            FileOutputStream fileOutputStream = new FileOutputStream(file);
+            fileOutputStream.write(str2.getBytes(StandardCharsets.UTF_8));
+            fileOutputStream.getFD().sync();
+            fileOutputStream.close();
+            File file2 = new File(str);
+            if (file2.exists()) {
+                file2.delete();
             }
-            return tmp.renameTo(dst);
+            return file.renameTo(file2);
         } catch (IOException e) {
             System.err.println("writeFileAtomic failed: " + e);
             return false;
         }
     }
 
-    public static String readFile(String path) {
+    public static String readFile(String str) throws IOException {
         try {
-            RandomAccessFile raf = new RandomAccessFile(path, "r");
-            byte[] buf = new byte[(int) Math.min(raf.length(), 1 << 20)];
-            raf.readFully(buf);
-            raf.close();
-            return new String(buf, StandardCharsets.UTF_8);
-        } catch (IOException e) {
+            RandomAccessFile randomAccessFile = new RandomAccessFile(str, "r");
+            byte[] bArr = new byte[(int) Math.min(randomAccessFile.length(), 1048576L)];
+            randomAccessFile.readFully(bArr);
+            randomAccessFile.close();
+            return new String(bArr, StandardCharsets.UTF_8);
+        } catch (IOException unused) {
             return null;
         }
     }
 
-    /** 获取本机 IPv4 地址（优先 wlan0，即 WiFi 接口） */
     public static String getLocalIp() {
+        String strIpOf;
         try {
-            java.net.NetworkInterface nif;
-            java.util.Enumeration<java.net.NetworkInterface> ifs = java.net.NetworkInterface.getNetworkInterfaces();
-            while (ifs != null && ifs.hasMoreElements()) {
-                nif = ifs.nextElement();
-                if (!nif.isUp() || nif.isLoopback()) continue;
-                String name = nif.getName();
-                // 优先 WiFi 接口
-                if (name.startsWith("wlan") || name.startsWith("ap")) {
-                    String ip = ipOf(nif);
-                    if (ip != null) return ip;
+            Enumeration<NetworkInterface> networkInterfaces = NetworkInterface.getNetworkInterfaces();
+            while (networkInterfaces != null && networkInterfaces.hasMoreElements()) {
+                NetworkInterface networkInterfaceNextElement = networkInterfaces.nextElement();
+                if (networkInterfaceNextElement.isUp() && !networkInterfaceNextElement.isLoopback()) {
+                    String name = networkInterfaceNextElement.getName();
+                    if (name.startsWith("wlan") || name.startsWith("ap")) {
+                        String strIpOf2 = ipOf(networkInterfaceNextElement);
+                        if (strIpOf2 != null) {
+                            return strIpOf2;
+                        }
+                    }
                 }
             }
-            // 其次任意非回环 IPv4
-            ifs = java.net.NetworkInterface.getNetworkInterfaces();
-            while (ifs != null && ifs.hasMoreElements()) {
-                nif = ifs.nextElement();
-                if (!nif.isUp() || nif.isLoopback()) continue;
-                String ip = ipOf(nif);
-                if (ip != null) return ip;
+            Enumeration<NetworkInterface> networkInterfaces2 = NetworkInterface.getNetworkInterfaces();
+            while (networkInterfaces2 != null) {
+                if (networkInterfaces2.hasMoreElements()) {
+                    NetworkInterface networkInterfaceNextElement2 = networkInterfaces2.nextElement();
+                    if (networkInterfaceNextElement2.isUp() && !networkInterfaceNextElement2.isLoopback() && (strIpOf = ipOf(networkInterfaceNextElement2)) != null) {
+                        return strIpOf;
+                    }
+                } else {
+                    return "127.0.0.1";
+                }
             }
-        } catch (Throwable ignored) {
+            return "127.0.0.1";
+        } catch (Throwable unused) {
+            return "127.0.0.1";
         }
-        return "127.0.0.1";
     }
 
-    private static String ipOf(java.net.NetworkInterface nif) {
-        java.util.Enumeration<java.net.InetAddress> addrs = nif.getInetAddresses();
-        while (addrs != null && addrs.hasMoreElements()) {
-            java.net.InetAddress a = addrs.nextElement();
-            if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
-                return a.getHostAddress();
+    private static String ipOf(NetworkInterface networkInterface) {
+        Enumeration<InetAddress> inetAddresses = networkInterface.getInetAddresses();
+        while (inetAddresses != null && inetAddresses.hasMoreElements()) {
+            InetAddress inetAddressNextElement = inetAddresses.nextElement();
+            if ((inetAddressNextElement instanceof Inet4Address) && !inetAddressNextElement.isLoopbackAddress()) {
+                return inetAddressNextElement.getHostAddress();
             }
         }
         return null;
     }
 
-    /** 从 Throwable 提取原因链第一条消息 */
-    public static String causeMsg(Throwable t) {
-        Throwable c = t;
-        while (c.getCause() != null) c = c.getCause();
-        return c.getMessage() != null ? c.getMessage() : c.toString();
+    public static String causeMsg(Throwable th) {
+        while (th.getCause() != null) {
+            th = th.getCause();
+        }
+        return th.getMessage() != null ? th.getMessage() : th.toString();
     }
 }

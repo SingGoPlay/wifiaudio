@@ -1,6 +1,5 @@
 package com.wifiaudio;
 
-import android.annotation.SuppressLint;
 import android.app.Application;
 import android.app.Instrumentation;
 import android.content.ContentResolver;
@@ -8,75 +7,60 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 
-/**
- * 为 app_process 进程伪造一个可用的系统 Context。
- * 参考 Genymobile scrcpy 的 Workarounds + FakeContext 实现。
- *
- * 重要：本类做了多层降级，任何一步失败都不会导致进程崩溃：
- *   1. 反射构造 ActivityThread 并注册为 sCurrentActivityThread（标准路径）
- *   2. 失败则回退 currentActivityThread() / ContextImpl.createSystemContext()
- *   3. 全部失败则抛带详细原因的 RuntimeException（由 Main 记录后退出）
- * 原始错误原因会完整打印到日志，便于定位厂商 ROM 的差异。
- */
-@SuppressLint("PrivateApi")
+/* loaded from: classes.dex */
 public final class FakeContext extends ContextWrapper {
-
+    private static final Object ACTIVITY_THREAD;
+    private static final Class<?> ACTIVITY_THREAD_CLASS;
+    private static final Throwable INIT_ERROR;
+    private static final FakeContext INSTANCE;
     public static final String PACKAGE_NAME = "com.android.shell";
 
-    private static final Class<?> ACTIVITY_THREAD_CLASS;
-    private static final Object ACTIVITY_THREAD;
-    private static final Throwable INIT_ERROR;
-
-    private static final FakeContext INSTANCE;
+    @Override // android.content.ContextWrapper, android.content.Context
+    public Context getApplicationContext() {
+        return this;
+    }
 
     static {
-        Throwable err = null;
-        Object at = null;
-        Class<?> atc = null;
+        Object obj;
+        Throwable th;
+        Class<?> cls;
         try {
-            atc = Class.forName("android.app.ActivityThread");
-            Constructor<?> ctor = atc.getDeclaredConstructor();
-            ctor.setAccessible(true);
-            at = ctor.newInstance();
-
-            // ActivityThread.sCurrentActivityThread = activityThread;
-            Field sCurrent = atc.getDeclaredField("sCurrentActivityThread");
-            sCurrent.setAccessible(true);
-            sCurrent.set(null, at);
-
-            // activityThread.mSystemThread = true;
-            Field mSystemThread = atc.getDeclaredField("mSystemThread");
-            mSystemThread.setAccessible(true);
-            mSystemThread.setBoolean(at, true);
-        } catch (Throwable t) {
-            err = t;
-            at = null;
-            atc = null;
+            cls = Class.forName("android.app.ActivityThread");
+            Constructor<?> declaredConstructor = cls.getDeclaredConstructor(null);
+            declaredConstructor.setAccessible(true);
+            Object objNewInstance = declaredConstructor.newInstance(null);
+            Field declaredField = cls.getDeclaredField("sCurrentActivityThread");
+            declaredField.setAccessible(true);
+            declaredField.set(null, objNewInstance);
+            Field declaredField2 = cls.getDeclaredField("mSystemThread");
+            declaredField2.setAccessible(true);
+            declaredField2.setBoolean(objNewInstance, true);
+            obj = objNewInstance;
+            th = null;
+        } catch (Throwable th2) {
+            obj = null;
+            th = th2;
+            cls = null;
         }
-        ACTIVITY_THREAD_CLASS = atc;
-        ACTIVITY_THREAD = at;
-        INIT_ERROR = err;
-
-        Context sys = getSystemContextQuiet();
-        if (sys == null) {
-            // 无法获得系统 Context：仍构造 INSTANCE（ContextWrapper 允许 null base），
-            // 但 getSystemService 会失败。由 Main 检测并报告。
+        ACTIVITY_THREAD_CLASS = cls;
+        ACTIVITY_THREAD = obj;
+        INIT_ERROR = th;
+        Context systemContextQuiet = getSystemContextQuiet();
+        if (systemContextQuiet == null) {
             INSTANCE = new FakeContext(null);
         } else {
-            INSTANCE = new FakeContext(sys);
+            INSTANCE = new FakeContext(systemContextQuiet);
         }
     }
 
-    /** 在 Main.main 开头调用，初始化 framework 上下文（必须在任何系统服务调用前） */
     public static void apply() {
-        if (INIT_ERROR != null) {
-            Util.log("FakeCtx", "ActivityThread init failed, using fallback", INIT_ERROR);
-            return; // 静态块已做降级
+        Throwable th = INIT_ERROR;
+        if (th != null) {
+            Util.log("FakeCtx", "ActivityThread init failed, using fallback", th);
+            return;
         }
         if (Build.VERSION.SDK_INT >= 31) {
             fillConfigurationController();
@@ -89,81 +73,79 @@ public final class FakeContext extends ContextWrapper {
 
     private static void fillConfigurationController() {
         try {
-            Class<?> ccClass = Class.forName("android.app.ConfigurationController");
-            Class<?> atiClass = Class.forName("android.app.ActivityThreadInternal");
-            Constructor<?> ctor = ccClass.getDeclaredConstructor(atiClass);
-            ctor.setAccessible(true);
-            Object cc = ctor.newInstance(ACTIVITY_THREAD);
-            Field f = ACTIVITY_THREAD_CLASS.getDeclaredField("mConfigurationController");
-            f.setAccessible(true);
-            f.set(ACTIVITY_THREAD, cc);
-        } catch (Throwable t) {
-            Util.log("FakeCtx", "fillConfigurationController skipped", t);
+            Constructor<?> declaredConstructor = Class.forName("android.app.ConfigurationController").getDeclaredConstructor(Class.forName("android.app.ActivityThreadInternal"));
+            declaredConstructor.setAccessible(true);
+            Object obj = ACTIVITY_THREAD;
+            Object objNewInstance = declaredConstructor.newInstance(obj);
+            Field declaredField = ACTIVITY_THREAD_CLASS.getDeclaredField("mConfigurationController");
+            declaredField.setAccessible(true);
+            declaredField.set(obj, objNewInstance);
+        } catch (Throwable th) {
+            Util.log("FakeCtx", "fillConfigurationController skipped", th);
         }
     }
 
     private static void fillAppInfo() {
         try {
-            Class<?> abdClass = Class.forName("android.app.ActivityThread$AppBindData");
-            Constructor<?> ctor = abdClass.getDeclaredConstructor();
-            ctor.setAccessible(true);
-            Object abd = ctor.newInstance();
-
-            ApplicationInfo ai = new ApplicationInfo();
-            ai.packageName = PACKAGE_NAME;
-            Field appInfoField = abdClass.getDeclaredField("appInfo");
-            appInfoField.setAccessible(true);
-            appInfoField.set(abd, ai);
-
-            Field mBound = ACTIVITY_THREAD_CLASS.getDeclaredField("mBoundApplication");
-            mBound.setAccessible(true);
-            mBound.set(ACTIVITY_THREAD, abd);
-        } catch (Throwable t) {
-            Util.log("FakeCtx", "fillAppInfo skipped", t);
+            Class<?> cls = Class.forName("android.app.ActivityThread$AppBindData");
+            Constructor<?> declaredConstructor = cls.getDeclaredConstructor(null);
+            declaredConstructor.setAccessible(true);
+            Object objNewInstance = declaredConstructor.newInstance(null);
+            ApplicationInfo applicationInfo = new ApplicationInfo();
+            applicationInfo.packageName = PACKAGE_NAME;
+            Field declaredField = cls.getDeclaredField("appInfo");
+            declaredField.setAccessible(true);
+            declaredField.set(objNewInstance, applicationInfo);
+            Field declaredField2 = ACTIVITY_THREAD_CLASS.getDeclaredField("mBoundApplication");
+            declaredField2.setAccessible(true);
+            declaredField2.set(ACTIVITY_THREAD, objNewInstance);
+        } catch (Throwable th) {
+            Util.log("FakeCtx", "fillAppInfo skipped", th);
         }
     }
 
     private static void fillAppContext() {
         try {
-            Application app = Instrumentation.newApplication(Application.class, get());
-            Field mInitial = ACTIVITY_THREAD_CLASS.getDeclaredField("mInitialApplication");
-            mInitial.setAccessible(true);
-            mInitial.set(ACTIVITY_THREAD, app);
-        } catch (Throwable t) {
-            Util.log("FakeCtx", "fillAppContext skipped", t);
+            Application applicationNewApplication = Instrumentation.newApplication(Application.class, get());
+            Field declaredField = ACTIVITY_THREAD_CLASS.getDeclaredField("mInitialApplication");
+            declaredField.setAccessible(true);
+            declaredField.set(ACTIVITY_THREAD, applicationNewApplication);
+        } catch (Throwable th) {
+            Util.log("FakeCtx", "fillAppContext skipped", th);
         }
     }
 
-    /** 多级获取系统 Context；全部失败返回 null（不抛） */
     private static Context getSystemContextQuiet() {
-        // 方式1: 我们构造的 ActivityThread.getSystemContext()
-        if (ACTIVITY_THREAD != null) {
+        Context context;
+        Object obj = ACTIVITY_THREAD;
+        if (obj != null) {
             try {
-                Method m = ACTIVITY_THREAD_CLASS.getDeclaredMethod("getSystemContext");
-                Context c = (Context) m.invoke(ACTIVITY_THREAD);
-                if (c != null) return c;
-            } catch (Throwable ignored) {
-            }
-        }
-        // 方式2: currentActivityThread()（app_process 下通常为 null）
-        if (ACTIVITY_THREAD_CLASS != null) {
-            try {
-                Object at = ACTIVITY_THREAD_CLASS.getMethod("currentActivityThread").invoke(null);
-                if (at != null) {
-                    Method m = ACTIVITY_THREAD_CLASS.getMethod("getSystemContext");
-                    Context c = (Context) m.invoke(at);
-                    if (c != null) return c;
+                Context context2 = (Context) ACTIVITY_THREAD_CLASS.getDeclaredMethod("getSystemContext", null).invoke(obj, null);
+                if (context2 != null) {
+                    return context2;
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable unused) {
             }
         }
-        // 方式3: ContextImpl.createSystemContext(null)
+        Class<?> cls = ACTIVITY_THREAD_CLASS;
+        if (cls != null) {
+            try {
+                Object objInvoke = cls.getMethod("currentActivityThread", null).invoke(null, null);
+                if (objInvoke != null) {
+                    Context context3 = (Context) cls.getMethod("getSystemContext", null).invoke(objInvoke, null);
+                    if (context3 != null) {
+                        return context3;
+                    }
+                }
+            } catch (Throwable unused2) {
+            }
+        }
         try {
-            Class<?> ci = Class.forName("android.app.ContextImpl");
-            Method m = ci.getMethod("createSystemContext", Class.forName("android.app.ActivityThread"));
-            Context c = (Context) m.invoke(null, ACTIVITY_THREAD);
-            if (c != null) return c;
-        } catch (Throwable ignored) {
+            context = (Context) Class.forName("android.app.ContextImpl").getMethod("createSystemContext", Class.forName("android.app.ActivityThread")).invoke(null, ACTIVITY_THREAD);
+        } catch (Throwable unused3) {
+        }
+        if (context != null) {
+            return context;
         }
         return null;
     }
@@ -172,69 +154,59 @@ public final class FakeContext extends ContextWrapper {
         return INSTANCE;
     }
 
-    private FakeContext(Context base) {
-        super(base);
+    private FakeContext(Context context) {
+        super(context);
     }
 
-    /** 检查 context 是否可用（base 是否为 null） */
     public boolean usable() {
         return getBaseContext() != null;
     }
 
-    /** 返回初始化错误（调试用） */
     public static Throwable getInitError() {
         return INIT_ERROR;
     }
 
-    @Override
+    @Override // android.content.ContextWrapper, android.content.Context
     public String getPackageName() {
         return PACKAGE_NAME;
     }
 
-    @Override
+    @Override // android.content.ContextWrapper, android.content.Context
     public String getOpPackageName() {
         return PACKAGE_NAME;
     }
 
-    @Override
-    public Context getApplicationContext() {
-        return this;
-    }
-
-    @Override
-    public Object getSystemService(String name) {
-        Context base = getBaseContext();
-        if (base == null) {
+    @Override // android.content.ContextWrapper, android.content.Context
+    public Object getSystemService(String str) {
+        Context baseContext = getBaseContext();
+        if (baseContext == null) {
             throw new IllegalStateException("FakeContext base is null (init error: " + INIT_ERROR + ")");
         }
-        Object service = base.getSystemService(name);
-        if (service == null) {
+        Object systemService = baseContext.getSystemService(str);
+        if (systemService == null) {
             return null;
         }
-        // 部分服务内部持有 context，替换其 mContext 以避免包名校验问题
         try {
-            Class<?> cls = service.getClass();
-            while (cls != null) {
+            for (Class<?> superclass = systemService.getClass(); superclass != null; superclass = superclass.getSuperclass()) {
                 try {
-                    Field f = cls.getDeclaredField("mContext");
-                    f.setAccessible(true);
-                    f.set(service, this);
+                    Field declaredField = superclass.getDeclaredField("mContext");
+                    declaredField.setAccessible(true);
+                    declaredField.set(systemService, this);
                     break;
-                } catch (NoSuchFieldException e) {
-                    cls = cls.getSuperclass();
+                } catch (NoSuchFieldException unused) {
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable unused2) {
         }
-        return service;
+        return systemService;
     }
 
-    @Override
+    @Override // android.content.ContextWrapper, android.content.Context
     public ContentResolver getContentResolver() {
-        Context base = getBaseContext();
-        if (base == null) {
+        Context baseContext = getBaseContext();
+        if (baseContext == null) {
             throw new IllegalStateException("FakeContext base is null");
         }
-        return base.getContentResolver();
+        return baseContext.getContentResolver();
     }
 }
