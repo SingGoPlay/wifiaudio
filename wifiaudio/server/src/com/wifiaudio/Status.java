@@ -1,109 +1,138 @@
 package com.wifiaudio;
 
+import java.io.IOException;
+import org.json.JSONException;
 import org.json.JSONObject;
 
-/** 运行状态，供 WiFiAudio 管理器 / HTTP /status 查询 */
+/* loaded from: classes.dex */
 public final class Status {
-
-    public static volatile boolean running = false;
-    public static volatile long startTime = 0;
-    public static volatile int pid = 0;
-    public static volatile int tcpPort = 47800;
-    public static volatile int httpPort = 47801;
-    public static volatile int udpPort = 48800;
-    public static volatile String codec = "pcm";
-    public static volatile int sampleRate = 48000;
-    public static volatile int channels = 2;
-    public static volatile long bitrate = 0;   // 实时比特率 bps（PCM=采样率×位深×声道；OPUS/AAC=配置码率）
-    public static volatile int clients = 0;
-    public static volatile boolean callCaptureSupported = false;
-    public static volatile boolean callCaptureActive = false;
-    public static volatile boolean callActive = false;
-    public static volatile String lastError = "";
+    public static volatile long bitrate = 0;
     public static volatile long bytesSent = 0;
-    public static volatile String mode = "music";
-    public static volatile String transport = "tcp";
+    public static volatile boolean callActive = false;
+    public static volatile boolean callCaptureActive = false;
+    public static volatile boolean callCaptureSupported = false;
+    public static volatile int captureLatencyMs = 0;
+    public static volatile int channels = 2;
+    public static volatile int clients = 0;
     public static volatile String clientsList = "";
-    public static volatile long encoderFrames = 0;
-    public static volatile boolean encoderActive = false;
-    public static volatile long mixerDrops = 0;      // 分发队列溢出丢弃的帧数（v4.18）
-    public static volatile int mixerQueueFrames = 0; // 当前分发队列深度（帧）
-    public static volatile long mixerDispatchUs = 0; // 最近一次分发给全部 Sink 的耗时（微秒）
+    public static volatile String codec = "pcm";
+    public static volatile int httpPort = 47801;
+    public static volatile String lastError = "";
+    public static volatile long mixerDispatchUs = 0;
+    public static volatile long mixerDrops = 0;
+    public static volatile int mixerQueueFrames = 0;
+    public static volatile String mode = "music";
+    public static volatile int pid = 0;
+    public static volatile int recordBufferFrames = -1;
+    public static volatile boolean running = false;
+    public static volatile int sampleRate = 48000;
+    public static volatile long startTime = 0;
+    private static String statusFile = null;
+    public static volatile int tcpClients = 0;
+    public static volatile int tcpPort = 47800;
+    public static volatile int tcpQueueFrames = 0;
+    public static volatile String transport = "tcp";
+    public static volatile int udpClients = 0;
+    public static volatile int udpPort = 48800;
 
-    private static String statusFile;
-
-    private Status() {}
-
-    public static void setStatusFile(String path) {
-        statusFile = path;
+    public static void setTcpClients(int i) {
+        tcpClients = i;
+        clients = tcpClients + udpClients;
     }
 
-    public static void save() {
-        if (statusFile == null) return;
-        JSONObject o = new JSONObject();
-        try {
-            o.put("running", running);
-            o.put("startTime", startTime);
-            o.put("pid", pid);
-            o.put("tcpPort", tcpPort);
-            o.put("httpPort", httpPort);
-            o.put("udpPort", udpPort);
-            o.put("codec", codec);
-            o.put("sampleRate", sampleRate);
-            o.put("channels", channels);
-            o.put("bitrate", bitrate);
-            o.put("clients", clients);
-            o.put("callCaptureSupported", callCaptureSupported);
-            o.put("callCaptureActive", callCaptureActive);
-            o.put("callActive", callActive);
-            o.put("lastError", lastError);
-            o.put("bytesSent", bytesSent);
-            o.put("mode", mode);
-            o.put("transport", transport);
-            o.put("clientsList", clientsList);
-            o.put("encoderFrames", encoderFrames);
-            o.put("encoderActive", encoderActive);
-            o.put("mixerDrops", mixerDrops);
-            o.put("mixerQueueFrames", mixerQueueFrames);
-            o.put("mixerDispatchUs", mixerDispatchUs);
-            o.put("ip", Util.getLocalIp());
-            o.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0);
-        } catch (Exception ignored) {
-        }
-        Util.writeFileAtomic(statusFile, o.toString());
+    public static void setUdpClients(int i) {
+        udpClients = i;
+        clients = tcpClients + udpClients;
     }
 
-    public static String toJson() {
-        JSONObject o = new JSONObject();
-        try {
-            o.put("running", running);
-            o.put("startTime", startTime);
-            o.put("pid", pid);
-            o.put("tcpPort", tcpPort);
-            o.put("httpPort", httpPort);
-            o.put("udpPort", udpPort);
-            o.put("codec", codec);
-            o.put("sampleRate", sampleRate);
-            o.put("channels", channels);
-            o.put("bitrate", bitrate);
-            o.put("clients", clients);
-            o.put("callCaptureSupported", callCaptureSupported);
-            o.put("callCaptureActive", callCaptureActive);
-            o.put("callActive", callActive);
-            o.put("lastError", lastError);
-            o.put("bytesSent", bytesSent);
-            o.put("mode", mode);
-            o.put("transport", transport);
-            o.put("clientsList", clientsList);
-            o.put("encoderFrames", encoderFrames);
-            o.put("encoderActive", encoderActive);
-            o.put("mixerDrops", mixerDrops);
-            o.put("mixerQueueFrames", mixerQueueFrames);
-            o.put("mixerDispatchUs", mixerDispatchUs);
-            o.put("ip", Util.getLocalIp());
-            o.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0);
-        } catch (Exception ignored) {
+    public static int senderLatencyMs() {
+        int i = captureLatencyMs;
+        if (i <= 0) {
+            return 0;
         }
-        return o.toString();
+        if (i > 65535) {
+            return 65535;
+        }
+        return i;
+    }
+
+    private Status() {
+    }
+
+    public static void setStatusFile(String str) {
+        statusFile = str;
+    }
+
+    public static void save() throws JSONException, IOException {
+        if (statusFile == null) {
+            return;
+        }
+        JSONObject jSONObject = new JSONObject();
+        try {
+            jSONObject.put("running", running);
+            jSONObject.put("startTime", startTime);
+            jSONObject.put("pid", pid);
+            jSONObject.put("tcpPort", tcpPort);
+            jSONObject.put("httpPort", httpPort);
+            jSONObject.put("udpPort", udpPort);
+            jSONObject.put("codec", codec);
+            jSONObject.put("sampleRate", sampleRate);
+            jSONObject.put("channels", channels);
+            jSONObject.put("bitrate", bitrate);
+            jSONObject.put("clients", clients);
+            jSONObject.put("callCaptureSupported", callCaptureSupported);
+            jSONObject.put("callCaptureActive", callCaptureActive);
+            jSONObject.put("callActive", callActive);
+            jSONObject.put("lastError", lastError);
+            jSONObject.put("bytesSent", bytesSent);
+            jSONObject.put("mode", mode);
+            jSONObject.put("transport", transport);
+            jSONObject.put("clientsList", clientsList);
+            jSONObject.put("mixerDrops", mixerDrops);
+            jSONObject.put("mixerQueueFrames", mixerQueueFrames);
+            jSONObject.put("tcpQueueFrames", tcpQueueFrames);
+            jSONObject.put("captureLatencyMs", captureLatencyMs);
+            jSONObject.put("recordBufferFrames", recordBufferFrames);
+            jSONObject.put("mixerDispatchUs", mixerDispatchUs);
+            jSONObject.put("ip", Util.getLocalIp());
+            jSONObject.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0L);
+        } catch (Exception unused) {
+        }
+        Util.writeFileAtomic(statusFile, jSONObject.toString());
+    }
+
+    public static String toJson() throws JSONException {
+        JSONObject jSONObject = new JSONObject();
+        try {
+            jSONObject.put("running", running);
+            jSONObject.put("startTime", startTime);
+            jSONObject.put("pid", pid);
+            jSONObject.put("tcpPort", tcpPort);
+            jSONObject.put("httpPort", httpPort);
+            jSONObject.put("udpPort", udpPort);
+            jSONObject.put("codec", codec);
+            jSONObject.put("sampleRate", sampleRate);
+            jSONObject.put("channels", channels);
+            jSONObject.put("bitrate", bitrate);
+            jSONObject.put("clients", clients);
+            jSONObject.put("callCaptureSupported", callCaptureSupported);
+            jSONObject.put("callCaptureActive", callCaptureActive);
+            jSONObject.put("callActive", callActive);
+            jSONObject.put("lastError", lastError);
+            jSONObject.put("bytesSent", bytesSent);
+            jSONObject.put("mode", mode);
+            jSONObject.put("transport", transport);
+            jSONObject.put("clientsList", clientsList);
+            jSONObject.put("mixerDrops", mixerDrops);
+            jSONObject.put("mixerQueueFrames", mixerQueueFrames);
+            jSONObject.put("tcpQueueFrames", tcpQueueFrames);
+            jSONObject.put("captureLatencyMs", captureLatencyMs);
+            jSONObject.put("recordBufferFrames", recordBufferFrames);
+            jSONObject.put("mixerDispatchUs", mixerDispatchUs);
+            jSONObject.put("ip", Util.getLocalIp());
+            jSONObject.put("uptimeSec", running ? (System.currentTimeMillis() - startTime) / 1000 : 0L);
+        } catch (Exception unused) {
+        }
+        return jSONObject.toString();
     }
 }

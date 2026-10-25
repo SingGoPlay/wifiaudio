@@ -1,8 +1,5 @@
 package com.wifiaudio.receiver;
 
-import com.wifiaudio.OpusDecoder;
-import com.wifiaudio.AacDecoder;
-
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -12,167 +9,263 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
-import android.media.MediaCodec;
-import android.media.MediaCodecInfo;
-import android.media.MediaFormat;
-import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
-
-import java.io.IOException;
+import androidx.compose.animation.core.AnimationKt;
+import androidx.compose.material3.ProgressIndicatorKt;
+import androidx.compose.runtime.ComposerKt;
+import androidx.core.view.accessibility.AccessibilityEventCompat;
+import com.wifiaudio.receiver.AudioOut;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import kotlin.UByte;
 
-/**
- * 前台服务：连接发送端，接收音频流并播放。
- * 协议：
- *   TCP: 16字节头 + 连续音频数据
- *   UDP: 发送端 TCP端口+1000，发送"WFAU"请求/心跳，收 16字节格式头 + 4字节seq+音频包
- *   codec: 0=PCM 1=AAC 2=OPUS
- */
+/* loaded from: classes2.dex */
 public class PlayerService extends Service {
-
-    private static final String TAG = "WiFiAudioReceiver";
-    private static final String CHANNEL_ID = "wifiaudio_playback";
-    private static final int UDP_PORT_OFFSET = 1000;
-    private static final byte[] MAGIC = {'W', 'F', 'A', 'U'};
-
     public static final String ACTION_CONNECT = "com.wifiaudio.receiver.CONNECT";
+    public static final String ACTION_STATE = "com.wifiaudio.receiver.STATE";
+    public static final String ACTION_STATS = "com.wifiaudio.receiver.STATS";
     public static final String ACTION_STOP = "com.wifiaudio.receiver.STOP";
     public static final String ACTION_TEST_TONE = "com.wifiaudio.receiver.TEST_TONE";
     public static final String ACTION_VOLUME = "com.wifiaudio.receiver.SET_VOLUME";
-    public static final String EXTRA_IP = "ip";
-    public static final String EXTRA_PORT = "port";
-    public static final String EXTRA_TRANSPORT = "transport"; // auto/tcp/udp
-    public static final String EXTRA_BUFFER = "buffer";       // low/medium/high
-    public static final String EXTRA_AAUDIO = "aaudio";       // 1=AAudio 输出
-    public static final String EXTRA_DECODE_MODE = "decode_mode"; // auto/hard/soft
-    public static final String EXTRA_DECODER_NAME = "decoder_name"; // null=自动
-    public static final String EXTRA_VOLUME = "volume";          // 0-100
-    public static final String EXTRA_AUTORECONNECT = "autoreconnect"; // 1=断线重连
-
-    public static final String ACTION_STATE = "com.wifiaudio.receiver.STATE";
-    public static final String EXTRA_STATE = "state";
-    public static final String EXTRA_MSG = "msg";
-    public static final String EXTRA_CODEC = "codec";
-    public static final String EXTRA_RATE = "rate";
-    public static final String EXTRA_CHANNELS = "channels";
-
-    /** 实时统计广播（每秒一次） */
-    public static final String ACTION_STATS = "com.wifiaudio.receiver.STATS";
-    public static final String EXTRA_CUR_TRANSPORT = "cur_transport";
-    public static final String EXTRA_BITRATE = "bitrate_kbps";
+    private static final String CHANNEL_ID = "wifiaudio_playback";
+    static final int DEVICE_BUFFERED_MAX_MS = 2000;
+    static final int DEVICE_LOW_MS = 12;
+    public static final String EXTRA_AAUDIO = "aaudio";
     public static final String EXTRA_AUDIO_MS = "audio_buffer_ms";
+    public static final String EXTRA_AUTORECONNECT = "autoreconnect";
+    public static final String EXTRA_BITRATE = "bitrate_kbps";
+    public static final String EXTRA_BUFFER = "buffer";
+    public static final String EXTRA_CHANNELS = "channels";
+    public static final String EXTRA_CODEC = "codec";
+    public static final String EXTRA_CUR_TRANSPORT = "cur_transport";
+    public static final String EXTRA_DEC_FRAMES = "dec_frames";
+    public static final String EXTRA_DROPPED = "dropped";
+    public static final String EXTRA_IP = "ip";
     public static final String EXTRA_JITTER_MS = "jitter_ms";
     public static final String EXTRA_LATENCY_MS = "latency_ms";
-    public static final String EXTRA_RX_KB = "rx_kb";
-    public static final String EXTRA_DEC_FRAMES = "dec_frames";
-    public static final String EXTRA_TARGET_MS = "target_ms";   // PCM 自适应缓冲目标
-    public static final String EXTRA_DROPPED = "dropped";       // 累计跳帧（帧）
-    public static final String EXTRA_UNDERRUN = "underrun";     // 累计下溢次数
-    public static final String EXTRA_OUTPUT = "output";         // AudioTrack / AAudio
     public static final String EXTRA_LOG = "log_lines";
-
+    public static final String EXTRA_MSG = "msg";
+    public static final String EXTRA_OUTPUT = "output";
+    public static final String EXTRA_PORT = "port";
+    public static final String EXTRA_RATE = "rate";
+    public static final String EXTRA_RX_KB = "rx_kb";
+    public static final String EXTRA_SENDER_MS = "sender_raw_ms";
+    public static final String EXTRA_STATE = "state";
+    public static final String EXTRA_TARGET_MS = "target_ms";
+    public static final String EXTRA_TRANSPORT = "transport";
+    public static final String EXTRA_UNDERRUN = "underrun";
+    public static final String EXTRA_VOLUME = "volume";
+    static final int SENDER_LATENCY_FALLBACK_MS = 40;
+    private static final String TAG = "WiFiAudioReceiver";
+    private static final int UDP_PORT_OFFSET = 1000;
+    static final int WRITE_AHEAD_GIVEUP_MS = 400;
+    static final int WRITE_AHEAD_MAX_MS = 60;
+    static final int WRITE_AHEAD_MS = 30;
+    static final int WRITE_AHEAD_STEP_MS = 10;
+    static final int WRITE_SLICE_MS = 10;
+    private static File logFile;
+    private static volatile ArrayBlockingQueue<String> logQueue;
+    private static volatile boolean logWriterStarted;
     private static volatile StateListener stateListener;
-    public interface StateListener {
-        void onState(String state, String msg, String codec, int rate, int channels);
-    }
-
-    /** 统计内存回调（与 ACTION_STATS 广播并存；UI 优先使用回调，规避广播兼容问题） */
-    public interface StatsListener {
-        void onStats(String transport, String codec, int rate, int channels, int kbps,
-                     int audioMs, int jitterMs, int latencyMs, int rxKb, int decFrames,
-                     int targetMs, long dropped, long underruns, String output,
-                     java.util.ArrayList<String> logs);
-    }
     private static volatile StatsListener statsListener;
-    public static void setStatsListener(StatsListener l) {
-        statsListener = l;
-    }
-
-    private volatile Thread worker;
-    private volatile boolean running = false;
     private AudioTrack audioTrack;
-    private MediaCodec codec;
-    private DatagramSocket udpSocket;
-    private Thread udpHeartbeat;
-    private volatile AudioSink currentSink;
-    private volatile DecoderEngine currentDecoder;
+    private volatile PcmJitterBuffer currentJb;
     private volatile AudioOut currentOut;
-    private volatile PcmJitterBuffer currentJb;   // PCM 自适应抖动缓冲
+    private volatile AudioSink currentSink;
+    private Thread statsThread;
+    private Thread udpHeartbeat;
+    private DatagramSocket udpSocket;
+    private volatile Thread worker;
+    private static final byte[] MAGIC = {87, 70, 65, 85};
+    private static volatile String aaudioNote = "";
+    private static volatile long statMaxArrivalGapMs = 0;
+    private static volatile long lastArrivalAtMs = 0;
+    private static final List<String> logBuf = Collections.synchronizedList(new ArrayList());
+    private static final ThreadLocal<SimpleDateFormat> LOG_SDF = new ThreadLocal<SimpleDateFormat>() { // from class: com.wifiaudio.receiver.PlayerService.1
+        /* JADX INFO: Access modifiers changed from: protected */
+        @Override // java.lang.ThreadLocal
+        public SimpleDateFormat initialValue() {
+            return new SimpleDateFormat("HH:mm:ss", Locale.US);
+        }
+    };
+    private volatile boolean running = false;
     private volatile String aaudioMode = "0";
-    private volatile String decodeMode = "auto";   // auto/hard/soft
-    private volatile String decoderName = "";      // 指定解码器（空=自动）
     private volatile int volume = 100;
     private volatile boolean autoReconnect = false;
     private volatile boolean userStopped = false;
-    // 统计
     private volatile String statTransport = "-";
     private volatile String statCodecName = "-";
     private volatile int statRate = 0;
     private volatile int statChannels = 0;
     private volatile int statJitterMs = 0;
-    private Thread statsThread;
-    // 日志缓冲（App 内显示 + 写文件）
-    private static final java.util.List<String> logBuf = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
-    private static File logFile;
+    private volatile int statSenderRawMs = -1;
+    private volatile int senderLatencyMs = 0;
+    private volatile int statUdpTargetMs = 0;
+    private volatile long statUdpDroppedFrames = 0;
+    private volatile long statUdpStarveCount = 0;
+    private volatile long statUdpUnderruns = 0;
+    private volatile long statUdpArrivedBytes = 0;
+    private volatile int statHdrRate = 0;
+    private volatile long lastBitrateWarnAt = 0;
+    private volatile boolean arrivalAdviceLogged = false;
 
-    /** 初始化日志文件（App 专属外部目录，免权限） */
-    public static void initLogFile(Context ctx) {
-        try {
-            File dir = ctx.getExternalFilesDir(null);
-            if (dir != null) {
-                logFile = new File(dir, "wifiaudio.log");
-                // 轮转：超过 1MB 重写
-                if (logFile.exists() && logFile.length() > 1024 * 1024) {
-                    logFile.delete();
-                }
-            }
-        } catch (Throwable ignored) {
+    public interface StateListener {
+        void onState(String str, String str2, String str3, int i, int i2);
+    }
+
+    public interface StatsListener {
+        void onStats(String str, String str2, int i, int i2, int i3, int i4, int i5, int i6, int i7, int i8, int i9, long j, long j2, String str3, ArrayList<String> arrayList, int i10);
+    }
+
+    static long pcmBufferedFrames(long j, long j2, long j3) {
+        long j4 = ((j & 4294967295L) - (j2 & 4294967295L)) & 4294967295L;
+        if (j4 > j3) {
+            return -1L;
         }
+        return j4;
     }
 
-    private static void addLog(String msg) {
-        long ms = System.currentTimeMillis();
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US);
-        String line = "[" + sdf.format(new java.util.Date(ms)) + "] " + msg;
-        logBuf.add(line);
-        while (logBuf.size() > 300) logBuf.remove(0);
-        Log.d(TAG, msg);
-        if (logFile != null) {
-            try {
-                java.io.FileOutputStream fos = new java.io.FileOutputStream(logFile, true);
-                fos.write((line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                fos.close();
-            } catch (Throwable ignored) {
-            }
+    static int saneBufferedMs(int i) {
+        if (i < 0 || i > DEVICE_BUFFERED_MAX_MS) {
+            return 0;
         }
+        return i;
     }
 
-    /** 供外部类（输出/解码引擎）写日志 */
-    public static void logStatic(String msg) {
-        addLog(msg);
+    static int senderLatencyForDisplay(int i) {
+        if (i > 0) {
+            return i;
+        }
+        return -1;
     }
 
-    public static void setStateListener(StateListener l) {
-        stateListener = l;
+    static boolean underrunStartsEpisode(boolean z, boolean z2) {
+        return z2 && !z;
     }
 
-    @Override
+    @Override // android.app.Service
     public IBinder onBind(Intent intent) {
         return null;
     }
 
-    @Override
+    public static void setStatsListener(StatsListener statsListener2) {
+        statsListener = statsListener2;
+    }
+
+    public static void initLogFile(Context context) {
+        try {
+            File externalFilesDir = context.getExternalFilesDir(null);
+            if (externalFilesDir != null) {
+                File file = new File(externalFilesDir, "wifiaudio.log");
+                logFile = file;
+                if (file.exists() && logFile.length() > 1048576) {
+                    logFile.delete();
+                }
+            }
+        } catch (Throwable unused) {
+        }
+        startLogWriter();
+    }
+
+    private static void startLogWriter() {
+        if (logWriterStarted || logFile == null) {
+            return;
+        }
+        synchronized (PlayerService.class) {
+            if (!logWriterStarted && logFile != null) {
+                final ArrayBlockingQueue<String> arrayBlockingQueue = new ArrayBlockingQueue<>(512);
+                logQueue = arrayBlockingQueue;
+                Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.2
+                    @Override // java.lang.Runnable
+                    public void run() throws InterruptedException {
+                        String str;
+                        StringBuilder sb = new StringBuilder(4096);
+                        while (true) {
+                            try {
+                                try {
+                                    sb.setLength(0);
+                                    sb.append((String) arrayBlockingQueue.take()).append('\n');
+                                    for (int i = 0; i < 200 && (str = (String) arrayBlockingQueue.poll()) != null; i++) {
+                                        sb.append(str).append('\n');
+                                    }
+                                    FileOutputStream fileOutputStream = new FileOutputStream(PlayerService.logFile, true);
+                                    fileOutputStream.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+                                    fileOutputStream.close();
+                                } catch (Throwable unused) {
+                                    Thread.sleep(200L);
+                                }
+                            } catch (InterruptedException unused2) {
+                                return;
+                            }
+                        }
+                    }
+                }, "log-writer");
+                thread.setDaemon(true);
+                thread.start();
+                logWriterStarted = true;
+            }
+        }
+    }
+
+    /* JADX INFO: Access modifiers changed from: private */
+    public static void addLog(String str) {
+        try {
+            String str2 = "[" + LOG_SDF.get().format(new Date()) + "] " + str;
+            logBuf.add(str2);
+            while (true) {
+                List<String> list = logBuf;
+                if (list.size() > 300) {
+                    list.remove(0);
+                } else {
+                    try {
+                        break;
+                    } catch (Throwable unused) {
+                    }
+                }
+            }
+            Log.d(TAG, str);
+            ArrayBlockingQueue<String> arrayBlockingQueue = logQueue;
+            if (arrayBlockingQueue != null) {
+                arrayBlockingQueue.offer(str2);
+            }
+        } catch (Throwable unused2) {
+        }
+    }
+
+    static int logBufferSize() {
+        return logBuf.size();
+    }
+
+    public static void logStatic(String str) {
+        addLog(str);
+    }
+
+    public static void setStateListener(StateListener stateListener2) {
+        stateListener = stateListener2;
+    }
+
+    @Override // android.app.Service
     public void onCreate() {
         super.onCreate();
         createChannel();
@@ -181,1474 +274,1530 @@ public class PlayerService extends Service {
         startForeground(1, buildNotification("正在准备…"));
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+    @Override // android.app.Service
+    public int onStartCommand(Intent intent, int i, int i2) throws Throwable {
+        if (intent == null) {
+            return 2;
+        }
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
             stopPlayback();
             stopSelf();
-            return START_NOT_STICKY;
+            return 2;
         }
         if (ACTION_TEST_TONE.equals(action)) {
             playTestTone();
-            return START_NOT_STICKY;
+            return 2;
         }
         if (ACTION_VOLUME.equals(action)) {
-            volume = intent.getIntExtra(EXTRA_VOLUME, 100);
-            // 实时应用到当前输出
-            if (currentOut != null) {
+            this.volume = intent.getIntExtra(EXTRA_VOLUME, 100);
+            if (this.currentOut != null) {
                 try {
-                    currentOut.setVolume(volume);
-                } catch (Throwable ignored) {
+                    this.currentOut.setVolume(this.volume);
+                } catch (Throwable unused) {
                 }
             }
-            if (currentSink != null) {
+            if (this.currentSink != null) {
                 try {
-                    currentSink.setVolume(volume);
-                } catch (Throwable ignored) {
+                    this.currentSink.setVolume(this.volume);
+                } catch (Throwable unused2) {
                 }
             }
-            return START_NOT_STICKY;
+            return 2;
         }
         if (ACTION_CONNECT.equals(action)) {
-            final String ip = intent.getStringExtra(EXTRA_IP);
-            final int port = intent.getIntExtra(EXTRA_PORT, 47800);
-            final String transport = intent.getStringExtra(EXTRA_TRANSPORT);
-            final String buffer = intent.getStringExtra(EXTRA_BUFFER);
-            aaudioMode = intent.getStringExtra(EXTRA_AAUDIO);
-            decodeMode = intent.getStringExtra(EXTRA_DECODE_MODE);
-            if (decodeMode == null) decodeMode = "auto";
-            decoderName = intent.getStringExtra(EXTRA_DECODER_NAME);
-            if (decoderName == null) decoderName = "";
-            volume = intent.getIntExtra(EXTRA_VOLUME, 100);
-            autoReconnect = "1".equals(intent.getStringExtra(EXTRA_AUTORECONNECT));
-            startPlayback(ip, port, transport, buffer);
+            String stringExtra = intent.getStringExtra(EXTRA_IP);
+            int intExtra = intent.getIntExtra(EXTRA_PORT, 47800);
+            String stringExtra2 = intent.getStringExtra("transport");
+            String stringExtra3 = intent.getStringExtra(EXTRA_BUFFER);
+            this.aaudioMode = intent.getStringExtra(EXTRA_AAUDIO);
+            this.volume = intent.getIntExtra(EXTRA_VOLUME, 100);
+            this.autoReconnect = "1".equals(intent.getStringExtra(EXTRA_AUTORECONNECT));
+            startPlayback(stringExtra, intExtra, stringExtra2, stringExtra3);
         }
-        return START_NOT_STICKY;
+        return 2;
     }
 
-    private synchronized void startPlayback(final String ip, final int port,
-                                            final String transport, final String buffer) {
-        stopPlayback();
-        userStopped = false;
-        running = true;
-        worker = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                connectAndPlay(ip, port, transport, buffer);
-            }
-        }, "wifiaudio-player");
-        worker.start();
-    }
-
-    private synchronized void stopPlayback() {
-        userStopped = true;
-        running = false;
-        if (worker != null) {
-            worker.interrupt();
-            worker = null;
-        }
-        if (statsThread != null) {
-            statsThread.interrupt();
-            statsThread = null;
-        }
-        if (udpSocket != null) {
-            try { udpSocket.close(); } catch (Throwable ignored) {}
-            udpSocket = null;
-        }
-        if (udpHeartbeat != null) {
-            udpHeartbeat.interrupt();
-            udpHeartbeat = null;
-        }
-        if (currentJb != null) {
-            currentJb.close();
-            currentJb = null;
-        }
-        if (currentSink != null) {
-            currentSink.release();
-            currentSink = null;
-        }
-        if (currentDecoder != null) {
-            try {
-                currentDecoder.release();
-            } catch (Throwable ignored) {
-            }
-            currentDecoder = null;
-        }
-        if (currentOut != null) {
-            try {
-                currentOut.close();
-            } catch (Throwable ignored) {
-            }
-            currentOut = null;
-        }
-        updateNotification("已停止");
-        emit("stopped", "已停止", null, 0, 0);
-    }
-
-    private void connectAndPlay(String ip, int port, String transport, String buffer) {
-        Socket socket = null;
+    private synchronized void startPlayback(final String str, final int i, final String str2, final String str3) throws Throwable {
         try {
-            addLog("正在连接 " + ip + ":" + port);
-            emit("connecting", "正在连接 " + ip + ":" + port + " …", null, 0, 0);
-            updateNotification("正在连接 " + ip + "…");
-            socket = new Socket();
-            socket.connect(new InetSocketAddress(ip, port), 6000);
-            socket.setTcpNoDelay(true);
-            socket.setSoTimeout(10000);
-            InputStream in = socket.getInputStream();
-
-            byte[] header = new byte[16];
-            if (!readFully(in, header)) {
-                emit("error", "连接已断开（未收到数据）", null, 0, 0);
-                return;
-            }
-            if (header[0] != 'W' || header[1] != 'F' || header[2] != 'A' || header[3] != 'U') {
-                emit("error", "协议不匹配：目标不是 WiFiAudio 发送端", null, 0, 0);
-                return;
-            }
-            int codecType = header[5] & 0xFF;
-            int rate = (int) leInt(header, 6);
-            int channels = header[10] & 0xFF;
-            if (channels <= 0) channels = 2;
-            int mode = header[12] & 0xFF;         // 0=music 1=game
-            int serverTransport = header[13] & 0xFF; // 0=tcp 1=udp
-            String codecName = codecName(codecType);
-            addLog("协议头: codec=" + codecName + " rate=" + rate + " ch=" + channels
-                    + " mode=" + (mode == 1 ? "game" : "music") + " serverTransport=" + (serverTransport == 1 ? "udp" : "tcp"));
-
-            // 决定传输方式
-            boolean useUdp;
-            if ("tcp".equals(transport)) useUdp = false;
-            else if ("udp".equals(transport)) useUdp = true;
-            else useUdp = (serverTransport == 1); // auto 跟随发送端
-
-            emit("playing", "已连接 " + rate + "Hz/" + channels + "ch " + codecName
-                    + (useUdp ? " (UDP)" : " (TCP)"), codecName, rate, channels);
-            updateNotification("正在播放 " + rate + "Hz " + codecName + (useUdp ? " UDP" : ""));
-
-            // 设置统计信息并启动统计线程
-            statTransport = useUdp ? "UDP" : "TCP";
-            statCodecName = codecName;
-            statRate = rate;
-            statChannels = channels;
-            statJitterMs = 0;
-            startStatsThread();
-
-            if (useUdp) {
-                socket.close();
-                socket = null;
-                playUdp(ip, port, codecType, rate, channels, buffer, mode);
-            } else {
-                playTcpStream(in, codecType, rate, channels, buffer, mode);
-            }
-        } catch (Exception e) {
-            if (running) {
-                Log.e(TAG, "playback error", e);
-                emit("error", "错误: " + e.getMessage(), null, 0, 0);
-                updateNotification("连接失败");
-            }
-        } finally {
             try {
-                if (socket != null) socket.close();
-            } catch (IOException ignored) {
+                stopPlayback();
+                this.userStopped = false;
+                this.running = true;
+                this.worker = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.3
+                    @Override // java.lang.Runnable
+                    public void run() throws InterruptedException {
+                        PlayerService.this.connectAndPlay(str, i, str2, str3);
+                    }
+                }, "wifiaudio-player");
+                this.worker.start();
+            } catch (Throwable th) {
+                th = th;
+                throw th;
             }
+        } catch (Throwable th2) {
+            th = th2;
         }
-        // 断线自动重连（用户未主动断开时）
-        if (running && autoReconnect && !userStopped) {
+    }
+
+    private synchronized void stopPlayback() throws Throwable {
+        try {
+            try {
+                this.userStopped = true;
+                this.running = false;
+                if (this.worker != null) {
+                    this.worker.interrupt();
+                    this.worker = null;
+                }
+                Thread thread = this.statsThread;
+                if (thread != null) {
+                    thread.interrupt();
+                    this.statsThread = null;
+                }
+                DatagramSocket datagramSocket = this.udpSocket;
+                if (datagramSocket != null) {
+                    try {
+                        datagramSocket.close();
+                    } catch (Throwable unused) {
+                    }
+                    this.udpSocket = null;
+                }
+                Thread thread2 = this.udpHeartbeat;
+                if (thread2 != null) {
+                    thread2.interrupt();
+                    this.udpHeartbeat = null;
+                }
+                if (this.currentJb != null) {
+                    this.currentJb.close();
+                    this.currentJb = null;
+                }
+                if (this.currentSink != null) {
+                    this.currentSink.release();
+                    this.currentSink = null;
+                }
+                if (this.currentOut != null) {
+                    try {
+                        this.currentOut.close();
+                    } catch (Throwable unused2) {
+                    }
+                    this.currentOut = null;
+                }
+                updateNotification("已停止");
+                emit("stopped", "已停止", null, 0, 0);
+            } catch (Throwable th) {
+                th = th;
+                throw th;
+            }
+        } catch (Throwable th2) {
+            th = th2;
+        }
+    }
+
+    /* JADX WARN: Removed duplicated region for block: B:126:0x02fe A[Catch: all -> 0x032d, TRY_LEAVE, TryCatch #7 {all -> 0x032d, blocks: (B:5:0x0069, B:124:0x02fa, B:126:0x02fe), top: B:140:0x0069 }] */
+    /* JADX WARN: Removed duplicated region for block: B:153:0x0327 A[EXC_TOP_SPLITTER, SYNTHETIC] */
+    /* JADX WARN: Removed duplicated region for block: B:162:? A[RETURN, SYNTHETIC] */
+    /*
+        Code decompiled incorrectly, please refer to instructions dump.
+    */
+    private boolean connectOnce(String str, int i, String str2, String str3) throws Throwable {
+        PlayerService playerService;
+        String str4;
+        Socket socket;
+        InputStream inputStream;
+        byte[] bArr;
+        Socket socket2 = null;
+        try {
+            try {
+                addLog("正在连接 " + str + ":" + i);
+                str4 = "错误: ";
+                playerService = this;
+                try {
+                    try {
+                        playerService.emit("connecting", "正在连接 " + str + ":" + i + " …", null, 0, 0);
+                        playerService.updateNotification("正在连接 " + str + "…");
+                        socket = new Socket();
+                        try {
+                            socket.connect(new InetSocketAddress(str, i), ProgressIndicatorKt.CircularAnimationProgressDuration);
+                            socket.setTcpNoDelay(true);
+                            socket.setSoTimeout(10000);
+                            inputStream = socket.getInputStream();
+                            playerService.senderLatencyMs = 0;
+                            aaudioNote = "";
+                            playerService.statUdpTargetMs = 0;
+                            playerService.statUdpDroppedFrames = 0L;
+                            playerService.statUdpStarveCount = 0L;
+                            playerService.statUdpUnderruns = 0L;
+                            playerService.statUdpArrivedBytes = 0L;
+                            playerService.lastBitrateWarnAt = 0L;
+                            statMaxArrivalGapMs = 0L;
+                            lastArrivalAtMs = 0L;
+                            playerService.arrivalAdviceLogged = false;
+                            bArr = new byte[16];
+                        } catch (Exception e) {
+                            e = e;
+                        } catch (Throwable th) {
+                            th = th;
+                        }
+                    } catch (Exception e2) {
+                        e = e2;
+                    }
+                } catch (Throwable th2) {
+                    th = th2;
+                }
+            } catch (Exception e3) {
+                e = e3;
+                playerService = this;
+                str4 = "错误: ";
+            }
+        } catch (Throwable th3) {
+            th = th3;
+        }
+        try {
+            if (!readFully(inputStream, bArr)) {
+                playerService.emit("error", "连接已断开（未收到数据）", null, 0, 0);
+                try {
+                    socket.close();
+                } catch (IOException unused) {
+                }
+                return false;
+            }
+            if (bArr[0] == 87 && bArr[1] == 70 && bArr[2] == 65 && bArr[3] == 85) {
+                int i2 = bArr[5] & UByte.MAX_VALUE;
+                if (i2 != 0) {
+                    emit("error", "对端发送的是压缩编码（" + (i2 == 1 ? "AAC" : i2 == 2 ? "OPUS" : String.valueOf(i2)) + "），本版本只支持未压缩 PCM —— 请把发射端模块也升级到 4.19", null, 0, 0);
+                    addLog("协议不匹配: 对端 codecType=" + i2 + "（本版本仅支持 PCM）");
+                    try {
+                        socket.close();
+                    } catch (IOException unused2) {
+                    }
+                    return false;
+                }
+                int iLeInt = (int) leInt(bArr, 6);
+                int i3 = bArr[10] & UByte.MAX_VALUE;
+                if (i3 <= 0) {
+                    i3 = 2;
+                }
+                int i4 = bArr[12] & UByte.MAX_VALUE;
+                int i5 = bArr[13] & UByte.MAX_VALUE;
+                this.senderLatencyMs = senderLatencyFromHeader(bArr, 0);
+                String strCodecName = codecName();
+                addLog("协议头: codec=" + strCodecName + " rate=" + iLeInt + " ch=" + i3 + " mode=" + (i4 == 1 ? "game" : "music") + " serverTransport=" + (i5 == 1 ? "udp" : "tcp") + (this.senderLatencyMs > 0 ? " 发送端实测延迟=" + this.senderLatencyMs + "ms" : " 发送端延迟=未提供(按40ms估算)"));
+                boolean z = !"tcp".equals(str2) && ("udp".equals(str2) || i5 == 1);
+                emit("playing", "已连接 " + iLeInt + "Hz/" + i3 + "ch " + strCodecName + (z ? " (UDP)" : " (TCP)"), strCodecName, iLeInt, i3);
+                updateNotification("正在播放 " + iLeInt + "Hz " + strCodecName + (z ? " UDP" : ""));
+                this.statTransport = z ? "UDP" : "TCP";
+                this.statCodecName = strCodecName;
+                this.statRate = iLeInt;
+                this.statHdrRate = iLeInt;
+                int iDeviceNativeRate = deviceNativeRate();
+                addLog("本机输出: 原生采样率 " + (iDeviceNativeRate > 0 ? (iDeviceNativeRate / 1000) + "kHz" : "未知") + "；本次「输出」= " + ("1".equals(this.aaudioMode) ? "AAudio（已请求）" : "AudioTrack"));
+                this.statChannels = i3;
+                this.statJitterMs = 0;
+                startStatsThread();
+                if (z) {
+                    socket.close();
+                    try {
+                        playUdp(str, i, i2, iLeInt, i3, str3, i4);
+                    } catch (Exception e4) {
+                        e = e4;
+                        playerService = this;
+                        if (playerService.running) {
+                            Log.e(TAG, "playback error", e);
+                            playerService.emit("error", str4 + e.getMessage(), null, 0, 0);
+                            playerService.updateNotification("连接失败");
+                        }
+                        if (socket2 != null) {
+                            return true;
+                        }
+                        try {
+                            socket2.close();
+                            return true;
+                        } catch (IOException unused3) {
+                            return true;
+                        }
+                    }
+                } else {
+                    playTcpStream(inputStream, iLeInt, i3, str3, i4);
+                    socket2 = socket;
+                }
+                if (socket2 != null) {
+                    try {
+                        socket2.close();
+                    } catch (IOException unused4) {
+                    }
+                }
+                return true;
+            }
+            emit("error", "协议不匹配：目标不是 WiFiAudio 发送端", null, 0, 0);
+            try {
+                socket.close();
+                return false;
+            } catch (IOException unused5) {
+                return false;
+            }
+        } catch (Exception e5) {
+            e = e5;
+            playerService = this;
+            socket2 = socket;
+            if (playerService.running) {
+            }
+            if (socket2 != null) {
+            }
+        } catch (Throwable th4) {
+            th = th4;
+            socket2 = socket;
+            if (socket2 != null) {
+                try {
+                    socket2.close();
+                } catch (IOException unused6) {
+                }
+            }
+            throw th;
+        }
+    }
+
+    /* JADX INFO: Access modifiers changed from: private */
+    public void connectAndPlay(String str, int i, String str2, String str3) throws InterruptedException {
+        while (this.running && !this.userStopped && connectOnce(str, i, str2, str3) && this.running && this.autoReconnect && !this.userStopped) {
             addLog("连接断开，3 秒后自动重连...");
             try {
-                Thread.sleep(3000);
-            } catch (InterruptedException ignored) {
-            }
-            if (running && !userStopped) {
-                connectAndPlay(ip, port, transport, buffer);
+                Thread.sleep(3000L);
+            } catch (InterruptedException unused) {
+                return;
             }
         }
     }
 
-    // ============ TCP 流播放 ============
-
-    private void playTcpStream(InputStream in, int codecType, int rate, int channels,
-                               String buffer, int mode) throws Exception {
-        if (codecType == 0) {
-            playPcmStream(in, rate, channels, buffer, mode);
-        } else {
-            playEncodedStream(in, codecType, rate, channels, buffer, mode);
-        }
+    private void playTcpStream(InputStream inputStream, int i, int i2, String str, int i3) throws Exception {
+        playPcmStream(inputStream, i, i2, str, i3);
     }
 
-    /** PCM 无损直通（自适应抖动缓冲：预缓冲 + 动态水位 + 过载丢帧 + 漂移伺服；可选 AAudio 输出） */
-    private void playPcmStream(InputStream in, int rate, int channels, String buffer, int mode) throws Exception {
-        AudioSink sink = createSink(0, rate, channels, buffer, mode);
-        currentSink = sink;
-        sink.rate = rate;
-        sink.channels = channels;
-        sink.setVolume(volume);
-        emit("playing", "PCM 直通 " + rate + "Hz/" + channels + "ch", "PCM", rate, channels);
-        int baseMs = computeBufferMs(buffer, mode);
-        boolean adaptive = buffer == null || !buffer.startsWith("custom:");
-        // 可选 AAudio 低延迟输出（PCM 直通也支持）
-        AudioOut pcmOut = null;
-        if ("1".equals(aaudioMode)) {
-            pcmOut = new AudioOut.AaudioOut();
-            if (pcmOut.open(rate, channels, baseMs)) {
-                pcmOut.setVolume(volume);
-                currentOut = pcmOut;
+    private void playPcmStream(InputStream inputStream, int i, int i2, String str, int i3) throws Exception {
+        AudioOut.AaudioOut aaudioOut;
+        int i4;
+        AudioSink audioSinkCreateSink = createSink(i, i2, str, i3);
+        this.currentSink = audioSinkCreateSink;
+        audioSinkCreateSink.rate = i;
+        audioSinkCreateSink.channels = i2;
+        audioSinkCreateSink.setVolume(this.volume);
+        emit("playing", "PCM 直通 " + i + "Hz/" + i2 + "ch", "PCM", i, i2);
+        int iComputeBufferMs = computeBufferMs(str, i3);
+        boolean z = str == null || !str.startsWith("custom:");
+        if ("1".equals(this.aaudioMode)) {
+            aaudioOut = new AudioOut.AaudioOut();
+            if (aaudioOut.open(i, i2, iComputeBufferMs)) {
+                aaudioOut.setVolume(this.volume);
+                this.currentOut = aaudioOut;
                 addLog("PCM 输出: AAudio（exclusive 低延迟）");
             } else {
                 addLog("PCM AAudio 打开失败，回退 AudioTrack");
-                pcmOut = null;
+                aaudioNote = aaudioFallbackNote(true, i, deviceNativeRate());
+                aaudioOut = null;
+            }
+        } else {
+            aaudioOut = null;
+        }
+        PcmJitterBuffer pcmJitterBuffer = new PcmJitterBuffer(audioSinkCreateSink, aaudioOut, i, i2, iComputeBufferMs, z);
+        this.currentJb = pcmJitterBuffer;
+        addLog("PCM 自适应缓冲启动: 目标 " + iComputeBufferMs + "ms" + (z ? "（自动调节 " + pcmJitterBuffer.minMs + "-" + pcmJitterBuffer.maxMs + "ms）" : "（自定义固定）"));
+        pcmJitterBuffer.start();
+        byte[] bArr = new byte[i2 * 4096];
+        while (this.running && (i4 = inputStream.read(bArr)) >= 0) {
+            if (i4 > 0) {
+                pcmJitterBuffer.write(bArr, i4);
             }
         }
-        PcmJitterBuffer jb = new PcmJitterBuffer(sink, pcmOut, rate, channels, baseMs, adaptive);
-        currentJb = jb;
-        addLog("PCM 自适应缓冲启动: 目标 " + baseMs + "ms"
-                + (adaptive ? "（自动调节 " + jb.minMs + "-" + jb.maxMs + "ms）" : "（自定义固定）"));
-        jb.start();
-        byte[] buf = new byte[4096 * channels];
-        while (running) {
-            int n = in.read(buf);
-            if (n < 0) break;
-            if (n > 0) jb.write(buf, n);
+        pcmJitterBuffer.close();
+        if (aaudioOut != null) {
+            try {
+                aaudioOut.close();
+            } catch (Throwable unused) {
+            }
+            if (this.currentOut == aaudioOut) {
+                this.currentOut = null;
+            }
         }
-        jb.close();
-        if (pcmOut != null) {
-            try { pcmOut.close(); } catch (Throwable ignored) {}
-            if (currentOut == pcmOut) currentOut = null;
+        audioSinkCreateSink.release();
+        if (this.currentJb == pcmJitterBuffer) {
+            this.currentJb = null;
         }
-        sink.release();
-        if (currentJb == jb) currentJb = null;
-        if (currentSink == sink) currentSink = null;
+        if (this.currentSink == audioSinkCreateSink) {
+            this.currentSink = null;
+        }
         emit("stopped", "流已结束", null, 0, 0);
     }
 
-    /** 压缩编码流：异步硬解优先，失败自动切换软解；输出 AudioTrack/AAudio 可切换 */
-    private void playEncodedStream(InputStream in, int codecType, int rate, int channels,
-                                   String buffer, int mode) throws Exception {
-        boolean isAac = codecType == 1;
-        byte[] first = new byte[8192];
-        int firstLen = -1;
-        boolean prefixMode = true;
-        byte[] opusHead = null;
-
-        // 读首帧
-        int hi = in.read();
-        int lo = in.read();
-        if (hi < 0 || lo < 0) {
-            emit("stopped", "流已结束", null, 0, 0);
-            return;
-        }
-        if (isAac) {
-            // AAC 双模式：前缀（新）或 ADTS（旧）
-            prefixMode = (hi & 0xFF) <= 0x20;
-            if (prefixMode) {
-                firstLen = (hi << 8) | lo;
-            } else {
-                byte[] head = new byte[7];
-                head[0] = (byte) hi;
-                head[1] = (byte) lo;
-                int hoff = 2;
-                while (hoff < 7) {
-                    int n = in.read(head, hoff, 7 - hoff);
-                    if (n < 0) break;
-                    hoff += n;
-                }
-                if (hoff < 7) { emit("stopped", "流已结束", null, 0, 0); return; }
-                firstLen = frameLenFromAdts(head);
-                addLog("检测到旧版服务端（纯 ADTS 流）");
-            }
-        } else {
-            // OPUS：前缀模式
-            firstLen = (hi << 8) | lo;
-        }
-        if (firstLen <= 7 || firstLen > first.length) {
-            emit("error", "首帧无效 (len=" + firstLen + ")", null, 0, 0);
-            return;
-        }
-        int off = 0;
-        while (off < firstLen) {
-            int n = in.read(first, off, firstLen - off);
-            if (n < 0) break;
-            off += n;
-        }
-        if (off < firstLen) { emit("stopped", "流已结束", null, 0, 0); return; }
-
-        // csd：AAC 从 ADTS 提取；OPUS 首包即 OpusHead
-        byte[] csd;
-        if (isAac) {
-            csd = buildCsdFromAdts(first);
-        } else {
-            if (firstLen >= 8 && first[0] == 'O' && first[1] == 'p') {
-                csd = new byte[firstLen];
-                System.arraycopy(first, 0, csd, 0, firstLen);
-            } else {
-                csd = null; // 无 OpusHead（旧服务端），硬解可能失败，软解不需要
-            }
-        }
-
-        // 输出（AudioTrack / AAudio）
-        AudioOut out = createAudioOut(rate, channels, buffer, mode);
-        // 解码器（硬解优先）
-        DecoderEngine decoder = createDecoder(isAac, rate, channels, csd, out);
-        currentDecoder = decoder;
-        currentOut = out;
-        emit("playing", "缓冲中… " + out.name() + " / " + decoder.name(), isAac ? "AAC" : "OPUS", rate, channels);
-        addLog("解码: " + decoder.name() + " 输出: " + out.name());
-
-        // 首帧（AAC 硬解剥离 ADTS 头）
-        feedFirst(decoder, isAac, first, firstLen);
-
-        // 主循环
-        while (running) {
-            if (decoder.failed()) {
-                if ("hard".equals(decodeMode)) {
-                    addLog("硬解失败（强制硬解，不切换）: " + decoder.name());
-                    break; // 强制硬解失败，停止
-                }
-                addLog("解码器失败，切换软解: " + decoder.name());
-                decoder.release();
-                decoder = new SoftDecoderEngine(isAac ? SoftDecoderEngine.TYPE_AAC : SoftDecoderEngine.TYPE_OPUS,
-                        rate, channels, csd, out);
-                decoder.init();
-                currentDecoder = decoder;
-            }
-            int h2 = in.read();
-            int l2 = in.read();
-            if (h2 < 0 || l2 < 0) break;
-            int frameLen = (h2 << 8) | l2;
-            if (frameLen <= 0 || frameLen > first.length) continue;
-            int foff = 0;
-            while (foff < frameLen) {
-                int n = in.read(first, foff, frameLen - foff);
-                if (n < 0) break;
-                foff += n;
-            }
-            if (foff < frameLen) break;
-            if (isAac && decoder instanceof AsyncHardDecoder) {
-                decoder.feed(first, 7, frameLen - 7); // 剥离 ADTS 头
-            } else {
-                decoder.feed(first, 0, frameLen);
-            }
-        }
-        decoder.eos();
-        decoder.release();
-        out.close();
-        currentDecoder = null;
-        currentOut = null;
-        emit("stopped", "流已结束", null, 0, 0);
-    }
-
-    private void feedFirst(DecoderEngine decoder, boolean isAac, byte[] frame, int len) {
-        if (isAac && decoder instanceof AsyncHardDecoder) {
-            decoder.feed(frame, 7, len - 7);
-        } else {
-            decoder.feed(frame, 0, len);
-        }
-    }
-
-    /** 创建输出（AAudio 优先若启用，失败回退 AudioTrack） */
-    private AudioOut createAudioOut(int rate, int channels, String buffer, int mode) {
-        int bufferMs = computeBufferMs(buffer, mode);
-        boolean wantAaudio = "1".equals(aaudioMode);
-        AudioOut out;
-        if (wantAaudio) {
-            out = new AudioOut.AaudioOut();
-            if (out.open(rate, channels, bufferMs)) return out;
-            addLog("AAudio 打开失败，回退 AudioTrack");
-            out = new AudioOut.AudioTrackOut();
-        } else {
-            out = new AudioOut.AudioTrackOut();
-        }
-        out.open(rate, channels, bufferMs);
-        out.setVolume(volume);
-        return out;
-    }
-
-    /** 缓冲 ms（档位/自定义） */
-    private int computeBufferMs(String buffer, int mode) {
-        if (buffer != null && buffer.startsWith("custom:")) {
+    static int computeBufferMs(String str, int i) {
+        if (str != null && str.startsWith("custom:")) {
             try {
-                return Integer.parseInt(buffer.substring(7));
-            } catch (NumberFormatException ignored) {
+                return Math.max(20, Integer.parseInt(str.substring(7)));
+            } catch (NumberFormatException unused) {
             }
         }
-        if ("low".equals(buffer)) return 40;
-        if ("high".equals(buffer)) return 160;
-        return mode == 1 ? 40 : 80;
+        if ("low".equals(str)) {
+            return 20;
+        }
+        if ("high".equals(str)) {
+            return 80;
+        }
+        return i == 1 ? 25 : 40;
     }
 
-    /** 创建解码器：按用户选择（auto 硬解优先+软解兜底 / hard 强制硬解 / soft 软解），可指定解码器 */
-    private DecoderEngine createDecoder(boolean isAac, int rate, int channels, byte[] csd, AudioOut out) {
-        String mime = isAac ? "audio/mp4a-latm" : "audio/opus";
-        int softType = isAac ? SoftDecoderEngine.TYPE_AAC : SoftDecoderEngine.TYPE_OPUS;
-        String name = decoderName == null || decoderName.isEmpty() ? null : decoderName;
-
-        if ("soft".equals(decodeMode)) {
-            DecoderEngine soft = new SoftDecoderEngine(softType, rate, channels, csd, out);
-            soft.init();
-            return soft;
-        }
-
-        // 校验指定解码器是否支持当前音频类型（防选错）
-        if (name != null) {
-            boolean supports = false;
-            try {
-                android.media.MediaCodecList mcl = new android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS);
-                for (android.media.MediaCodecInfo info : mcl.getCodecInfos()) {
-                    if (name.equals(info.getName())) {
-                        for (String t : info.getSupportedTypes()) {
-                            if (mime.equals(t)) { supports = true; break; }
-                        }
-                        break;
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-            if (!supports) {
-                addLog("解码器 " + name + " 不支持 " + mime + "，回退自动选择");
-                name = null;
-            }
-        }
-
-        DecoderEngine hard = new AsyncHardDecoder(mime, rate, channels, csd, out, name);
-        if (hard.init()) {
-            if ("hard".equals(decodeMode)) addLog("强制硬解模式（用户指定）");
-            return hard;
-        }
-        if ("hard".equals(decodeMode)) {
-            addLog("硬解不可用（强制硬解模式）");
-            return hard; // 返回失败的硬解，主循环会提示
-        }
-        addLog("硬解不可用，切换软解");
-        hard.release();
-        DecoderEngine soft = new SoftDecoderEngine(softType, rate, channels, csd, out);
-        soft.init();
-        return soft;
-    }
-
-
-
-    // ============ UDP 播放 ============
-
-    private void playUdp(String ip, int tcpPort, int codecType, int rate, int channels,
-                         String buffer, int mode) throws Exception {
-        int udpPort = tcpPort + UDP_PORT_OFFSET;
-        udpSocket = new DatagramSocket();
-        udpSocket.setSoTimeout(10000);
-        InetAddress addr = InetAddress.getByName(ip);
-        InetSocketAddress server = new InetSocketAddress(addr, udpPort);
-        byte[] magic = MAGIC;
-        udpSocket.send(new DatagramPacket(magic, magic.length, server));
-
-        // 心跳线程
-        udpHeartbeat = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                while (running && udpSocket != null && !udpSocket.isClosed()) {
+    /* JADX WARN: Removed duplicated region for block: B:71:0x02b8  */
+    /*
+        Code decompiled incorrectly, please refer to instructions dump.
+    */
+    private void playUdp(String str, int i, final int i2, final int i3, final int i4, String str2, int i5) throws Exception {
+        AudioOut.AaudioOut aaudioOut;
+        byte[] bArr;
+        final boolean z;
+        AudioSink audioSink;
+        Thread thread;
+        Map.Entry entryPollFirstEntry;
+        PlayerService playerService = this;
+        int i6 = i4;
+        DatagramSocket datagramSocket = new DatagramSocket();
+        playerService.udpSocket = datagramSocket;
+        datagramSocket.setSoTimeout(10000);
+        final InetSocketAddress inetSocketAddress = new InetSocketAddress(InetAddress.getByName(str), i + 1000);
+        final byte[] bArr2 = MAGIC;
+        playerService.udpSocket.send(new DatagramPacket(bArr2, bArr2.length, inetSocketAddress));
+        Thread thread2 = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.4
+            @Override // java.lang.Runnable
+            public void run() throws InterruptedException, IOException {
+                while (PlayerService.this.running && PlayerService.this.udpSocket != null && !PlayerService.this.udpSocket.isClosed()) {
                     try {
-                        Thread.sleep(2000);
-                        udpSocket.send(new DatagramPacket(magic, magic.length, server));
-                    } catch (Exception e) {
-                        break;
+                        Thread.sleep(2000L);
+                        DatagramSocket datagramSocket2 = PlayerService.this.udpSocket;
+                        byte[] bArr3 = bArr2;
+                        datagramSocket2.send(new DatagramPacket(bArr3, bArr3.length, inetSocketAddress));
+                    } catch (Exception unused) {
+                        return;
                     }
                 }
             }
         }, "udp-heartbeat");
-        udpHeartbeat.start();
-
-        // 等待格式头
-        byte[] buf = new byte[8192];
-        boolean gotHeader = false;
-        long deadline = System.currentTimeMillis() + 8000;
-        while (running && System.currentTimeMillis() < deadline) {
-            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-            udpSocket.receive(pkt);
-            if (pkt.getLength() >= 16 && isMagic(buf, pkt.getOffset())) {
-                gotHeader = true;
-                break;
-            }
-        }
-        if (!gotHeader) {
-            emit("error", "UDP 等待格式头超时", null, 0, 0);
-            return;
-        }
-
-        AudioSink sink = createSink(codecType, rate, channels, buffer, mode);
-        sink.rate = rate;
-        sink.channels = channels;
-        if (sink.bufferMs > 0) {
-            emit("playing", "缓冲 " + sink.bufferMs + "ms（App 内可调，减小可降延迟）", codecName(codecType), rate, channels);
-        }
-
-        // PCM 可选 AAudio 低延迟输出
-        final AudioOut pcmOut;
-        if (codecType == 0 && "1".equals(aaudioMode)) {
-            AudioOut ao = new AudioOut.AaudioOut();
-            if (ao.open(rate, channels, udpBufferMs(buffer, mode))) {
-                ao.setVolume(volume);
-                currentOut = ao;
-                addLog("UDP PCM 输出: AAudio（exclusive 低延迟）");
-                pcmOut = ao;
-            } else {
-                addLog("UDP PCM AAudio 打开失败，回退 AudioTrack");
-                pcmOut = null;
-            }
-        } else {
-            pcmOut = null;
-        }
-        final AudioOut fPcmOut = pcmOut;
-
-        // 抖动缓冲：TreeMap<seq, payload>，按"毫秒"管理水位（兼容任意包粒度；下限 20ms ≈ 1 帧）
-        final TreeMap<Long, byte[]> jitter = new TreeMap<Long, byte[]>();
-        final boolean isPcm = codecType == 0;
-        final long frameBytes = (long) channels * 2; // PCM16 每帧字节
-        final long[] queuedMs = {0};
-        final int baseMs = udpBufferMs(buffer, mode);
-        final int[] targetMs = {baseMs}; // 自适应：稳定后减小到 20ms
-        final long[] lastSeq = {-1};
-        final int[] stableCount = {0};
-
-        // 播放线程
-        Thread playThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                boolean started = false;
-                while (running) {
-                    byte[] frame = null;
-                    synchronized (jitter) {
-                        if (queuedMs[0] >= targetMs[0] || started && !jitter.isEmpty()) {
-                            Map.Entry<Long, byte[]> e = jitter.firstEntry();
-                            frame = e.getValue();
-                            jitter.remove(e.getKey());
-                            queuedMs[0] -= pktMs(frame.length, isPcm, frameBytes, rate);
-                            started = true;
-                            // 稳定检测：连续 200 包无丢包则减小抖动缓冲（延迟最低）
-                            long seq = e.getKey();
-                            if (lastSeq[0] >= 0 && seq == lastSeq[0] + 1) {
-                                stableCount[0]++;
-                                if (stableCount[0] >= 40 && targetMs[0] > 20) {
-                                    targetMs[0] = Math.max(20, targetMs[0] - 5); // 平滑收缩（每 40 包 -5ms）
-                                    stableCount[0] = 0;
-                                }
-                            } else {
-                                stableCount[0] = 0;
-                                if (targetMs[0] < baseMs) {
-                                    targetMs[0] = Math.min(baseMs, targetMs[0] + 20); // 丢包逐步恢复
+        playerService.udpHeartbeat = thread2;
+        thread2.start();
+        int i7 = 8192;
+        byte[] bArr3 = new byte[8192];
+        long jCurrentTimeMillis = System.currentTimeMillis() + 8000;
+        while (playerService.running && System.currentTimeMillis() < jCurrentTimeMillis) {
+            DatagramPacket datagramPacket = new DatagramPacket(bArr3, i7);
+            playerService.udpSocket.receive(datagramPacket);
+            if (datagramPacket.getLength() >= 16 && playerService.isMagic(bArr3, datagramPacket.getOffset())) {
+                playerService.senderLatencyMs = senderLatencyFromHeader(bArr3, datagramPacket.getOffset());
+                final AudioSink audioSinkCreateSink = playerService.createSink(i3, i6, str2, i5);
+                audioSinkCreateSink.rate = i3;
+                audioSinkCreateSink.channels = i6;
+                if (audioSinkCreateSink.bufferMs > 0) {
+                    playerService.emit("playing", "抖动缓冲目标 " + udpBufferMs(str2, i5) + "ms（输出缓冲 " + audioSinkCreateSink.bufferMs + "ms）——「缓冲」档位可调", codecName(), i3, i6);
+                }
+                if (i2 == 0 && "1".equals(playerService.aaudioMode)) {
+                    aaudioOut = new AudioOut.AaudioOut();
+                    if (aaudioOut.open(i3, i6, udpBufferMs(str2, i5))) {
+                        aaudioOut.setVolume(playerService.volume);
+                        playerService.currentOut = aaudioOut;
+                        addLog("UDP PCM 输出: AAudio（exclusive 低延迟）");
+                    } else {
+                        addLog("UDP PCM AAudio 打开失败，回退 AudioTrack");
+                        aaudioNote = aaudioFallbackNote(true, i3, playerService.deviceNativeRate());
+                        aaudioOut = null;
+                    }
+                } else {
+                    aaudioOut = null;
+                }
+                final AudioOut[] audioOutArr = {aaudioOut};
+                final TreeMap treeMap = new TreeMap();
+                final boolean z2 = i2 == 0;
+                final long j = i6 * 2;
+                final int iMax = Math.max(8, i3 / 500);
+                final short[] sArr = {0, 0};
+                final boolean[] zArr = {true};
+                byte[] bArr4 = bArr3;
+                final long[] jArr = {0};
+                final int iUdpBufferMs = udpBufferMs(str2, i5);
+                if (str2 == null || !str2.startsWith("custom:")) {
+                    bArr = bArr4;
+                    z = true;
+                } else {
+                    bArr = bArr4;
+                    z = false;
+                }
+                final int[] iArr = {iUdpBufferMs};
+                final long[] jArr2 = {-1};
+                final int[] iArr2 = {0};
+                final long[] jArr3 = {0};
+                final boolean[] zArr2 = {false};
+                byte[] bArr5 = bArr;
+                final WriteAheadGovernor writeAheadGovernor = new WriteAheadGovernor();
+                final long[] jArr4 = {0};
+                byte[] bArr6 = bArr5;
+                Thread thread3 = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.5
+                    @Override // java.lang.Runnable
+                    public void run() throws InterruptedException {
+                        AudioOut audioOut;
+                        byte[] bArr7;
+                        long j2;
+                        boolean z3;
+                        int[] iArr3;
+                        int i8;
+                        boolean z4 = false;
+                        boolean z5 = false;
+                        while (PlayerService.this.running) {
+                            if (!zArr2[0]) {
+                                AudioOut audioOut2 = audioOutArr[0];
+                                if ((audioOut2 != null ? audioOut2.getBufferMs() : audioSinkCreateSink.getBufferMs()) > writeAheadGovernor.ms) {
+                                    long jNanoTime = System.nanoTime();
+                                    long[] jArr5 = jArr3;
+                                    long j3 = jArr5[0];
+                                    if (j3 == 0) {
+                                        jArr5[0] = jNanoTime;
+                                    } else if ((jNanoTime - j3) / AnimationKt.MillisToNanos > 400) {
+                                        zArr2[0] = true;
+                                        PlayerService.logStatic("UDP 写前量限制连续推不动（设备缓冲计数可能不可信），暂时放弃限制以保证出声");
+                                    }
+                                    try {
+                                        Thread.sleep(2L);
+                                    } catch (InterruptedException unused) {
+                                        return;
+                                    }
+                                } else {
+                                    jArr3[0] = 0;
                                 }
                             }
-                            lastSeq[0] = seq;
+                            synchronized (treeMap) {
+                                audioOut = null;
+                                if (jArr[0] >= iArr[0] || (z4 && !treeMap.isEmpty())) {
+                                    Map.Entry entryFirstEntry = treeMap.firstEntry();
+                                    bArr7 = (byte[]) entryFirstEntry.getValue();
+                                    treeMap.remove(entryFirstEntry.getKey());
+                                    long[] jArr6 = jArr;
+                                    j2 = 2;
+                                    z3 = true;
+                                    jArr6[0] = jArr6[0] - PlayerService.pktMs(bArr7.length, z2, j, i3);
+                                    long jLongValue = ((Long) entryFirstEntry.getKey()).longValue();
+                                    long j4 = jArr2[0];
+                                    if (j4 >= 0 && jLongValue != j4 + 1) {
+                                        zArr[0] = true;
+                                    }
+                                    if (z) {
+                                        if (j4 >= 0 && jLongValue == j4 + 1) {
+                                            int[] iArr4 = iArr2;
+                                            int i9 = iArr4[0] + 1;
+                                            iArr4[0] = i9;
+                                            if (i9 >= 40 && (i8 = (iArr3 = iArr)[0]) > 20) {
+                                                iArr3[0] = Math.max(20, i8 - 5);
+                                                iArr2[0] = 0;
+                                            }
+                                        } else {
+                                            iArr2[0] = 0;
+                                            int[] iArr5 = iArr;
+                                            int i10 = iArr5[0];
+                                            int i11 = iUdpBufferMs;
+                                            if (i10 < i11) {
+                                                iArr5[0] = Math.min(i11, i10 + 20);
+                                            }
+                                        }
+                                    }
+                                    jArr2[0] = jLongValue;
+                                    z4 = true;
+                                } else {
+                                    j2 = 2;
+                                    z3 = true;
+                                    bArr7 = null;
+                                }
+                                PlayerService.this.statUdpTargetMs = iArr[0];
+                            }
+                            if (bArr7 == null) {
+                                long[] jArr7 = jArr4;
+                                long j5 = jArr7[0] + 1;
+                                jArr7[0] = j5;
+                                PlayerService.this.statUdpStarveCount = j5;
+                                AudioOut audioOut3 = audioOutArr[0];
+                                if (PlayerService.underrunStartsEpisode(z5, (audioOut3 != null ? audioOut3.getBufferMs() : audioSinkCreateSink.getBufferMs()) <= 12 ? z3 : false)) {
+                                    PlayerService.this.statUdpUnderruns++;
+                                    z5 = z3;
+                                }
+                                Thread.sleep(j2);
+                            } else {
+                                writeAheadGovernor.observe(audioOutArr[0] == null ? audioSinkCreateSink : null, jArr4[0]);
+                                try {
+                                    if (i2 == 0) {
+                                        AudioOut audioOut4 = audioOutArr[0];
+                                        if (audioOut4 == null || audioOut4.healthy()) {
+                                            audioOut = audioOut4;
+                                        } else {
+                                            PlayerService.logStatic("AAudio 输出失效，切换回 AudioTrack 继续播放(UDP)");
+                                            PlayerService.aaudioNote = PlayerService.aaudioFallbackNote(false, i3, PlayerService.this.deviceNativeRate());
+                                            try {
+                                                audioOut4.close();
+                                            } catch (Throwable unused2) {
+                                            }
+                                            audioOutArr[0] = null;
+                                            if (PlayerService.this.currentOut == audioOut4) {
+                                                PlayerService.this.currentOut = null;
+                                            }
+                                        }
+                                        byte[] bArr8 = bArr7;
+                                        PlayerService.fadeAndTrack(bArr8, bArr7.length, (int) j, i4, iMax, zArr[0], sArr);
+                                        zArr[0] = false;
+                                        if (audioOut != null) {
+                                            audioOut.writePcmBytes(bArr8, bArr8.length);
+                                            audioSinkCreateSink.receivedBytes += bArr8.length;
+                                            audioSinkCreateSink.writtenFrames += bArr8.length / (i4 * 2);
+                                        } else {
+                                            audioSinkCreateSink.writePcm(bArr8, bArr8.length);
+                                        }
+                                    }
+                                } catch (Throwable unused3) {
+                                }
+                                z5 = false;
+                            }
                         }
                     }
-                    if (frame == null) {
-                        try { Thread.sleep(2); } catch (InterruptedException e) { break; }
-                        continue;
+                }, "udp-play");
+                thread3.start();
+                while (playerService.running) {
+                    byte[] bArr7 = bArr6;
+                    DatagramPacket datagramPacket2 = new DatagramPacket(bArr7, 8192);
+                    playerService.udpSocket.receive(datagramPacket2);
+                    if (datagramPacket2.getLength() >= 16 && playerService.isMagic(bArr7, datagramPacket2.getOffset())) {
+                        playerService.senderLatencyMs = senderLatencyFromHeader(bArr7, datagramPacket2.getOffset());
+                    } else if (datagramPacket2.getLength() > 4) {
+                        int offset = datagramPacket2.getOffset();
+                        boolean[] zArr3 = zArr;
+                        long[] jArr5 = jArr;
+                        int[] iArr3 = iArr;
+                        long j2 = ((bArr7[offset + 1] & 255) << 16) | ((bArr7[offset] & 255) << 24) | ((bArr7[offset + 2] & 255) << 8) | (bArr7[offset + 3] & 255);
+                        int length = datagramPacket2.getLength() - 4;
+                        byte[] bArr8 = new byte[length];
+                        System.arraycopy(bArr7, offset + 4, bArr8, 0, length);
+                        playerService.statUdpArrivedBytes += length;
+                        noteArrival();
+                        synchronized (treeMap) {
+                            if (treeMap.containsKey(Long.valueOf(j2))) {
+                                thread = thread3;
+                            } else {
+                                treeMap.put(Long.valueOf(j2), bArr8);
+                                long jPktMs = jArr5[0] + pktMs(length, z2, j, i3);
+                                jArr5[0] = jPktMs;
+                                playerService.statJitterMs = (int) jPktMs;
+                                boolean z3 = true;
+                                long jMax = Math.max(iArr3[0] + 12, (long) Math.ceil(pktMs(Math.max(length, 1), z2, j, i3)));
+                                while (jArr5[0] > jMax && (entryPollFirstEntry = treeMap.pollFirstEntry()) != null) {
+                                    jArr5[0] = jArr5[0] - pktMs(((byte[]) entryPollFirstEntry.getValue()).length, z2, j, i3);
+                                    boolean z4 = z3;
+                                    playerService.statUdpDroppedFrames += ((byte[]) entryPollFirstEntry.getValue()).length / j;
+                                    zArr3[0] = z4;
+                                    thread3 = thread3;
+                                    z3 = z4;
+                                }
+                                thread = thread3;
+                            }
+                        }
+                        zArr = zArr3;
+                        jArr = jArr5;
+                        iArr = iArr3;
+                        bArr6 = bArr7;
+                        thread3 = thread;
                     }
+                    bArr6 = bArr7;
+                }
+                Thread thread4 = thread3;
+                thread4.interrupt();
+                try {
+                    thread4.join(1000L);
+                } catch (InterruptedException unused) {
+                }
+                AudioOut audioOut = audioOutArr[0];
+                if (audioOut != null) {
                     try {
-                        if (codecType == 0) {
-                            if (fPcmOut != null) {
-                                fPcmOut.writePcmBytes(frame, frame.length);
-                                // 统计（AAudio 路径不经过 sink.writePcm）
-                                sink.receivedBytes += frame.length;
-                                sink.writtenFrames += frame.length / (channels * 2);
-                            } else {
-                                sink.writePcm(frame, frame.length);
-                            }
-                        } else {
-                            sink.writeEncoded(frame, frame.length);
-                        }
-                    } catch (Throwable ignored) {
+                        audioOut.close();
+                    } catch (Throwable unused2) {
+                    }
+                    if (playerService.currentOut == audioOut) {
+                        audioSink = null;
+                        playerService.currentOut = null;
+                    } else {
+                        audioSink = null;
                     }
                 }
-            }
-        }, "udp-play");
-        playThread.start();
-
-        // 接收线程
-        while (running) {
-            DatagramPacket pkt = new DatagramPacket(buf, buf.length);
-            udpSocket.receive(pkt);
-            if (pkt.getLength() >= 16 && isMagic(buf, pkt.getOffset())) {
-                continue; // 格式头，忽略
-            }
-            if (pkt.getLength() <= 4) continue;
-            int o = pkt.getOffset();
-            long seq = ((buf[o] & 0xFFL) << 24) | ((buf[o + 1] & 0xFFL) << 16)
-                     | ((buf[o + 2] & 0xFFL) << 8) | (buf[o + 3] & 0xFFL);
-            int payloadLen = pkt.getLength() - 4;
-            byte[] payload = new byte[payloadLen];
-            System.arraycopy(buf, o + 4, payload, 0, payloadLen);
-            synchronized (jitter) {
-                if (!jitter.containsKey(seq)) {
-                    jitter.put(seq, payload);
-                    queuedMs[0] += pktMs(payloadLen, isPcm, frameBytes, rate);
-                    statJitterMs = (int) queuedMs[0];
-                    // 防膨胀：超过 3 倍目标缓冲时丢弃最旧的
-                    while (queuedMs[0] > baseMs * 3L) {
-                        Map.Entry<Long, byte[]> old = jitter.pollFirstEntry();
-                        if (old == null) break;
-                        queuedMs[0] -= pktMs(old.getValue().length, isPcm, frameBytes, rate);
-                    }
+                audioSinkCreateSink.release();
+                if (playerService.currentSink == audioSinkCreateSink) {
+                    playerService.currentSink = audioSink;
                 }
+                playerService.emit("stopped", "流已结束", null, 0, 0);
+                return;
             }
+            i7 = 8192;
+            playerService = this;
+            i6 = i4;
+            bArr3 = bArr3;
         }
-        playThread.interrupt();
-        if (fPcmOut != null) {
-            try { fPcmOut.close(); } catch (Throwable ignored) {}
-            if (currentOut == fPcmOut) currentOut = null;
-        }
-        sink.release();
-        if (currentSink == sink) currentSink = null;
-        emit("stopped", "流已结束", null, 0, 0);
+        emit("error", "UDP 等待格式头超时", null, 0, 0);
     }
 
-    /** UDP 抖动缓冲目标（毫秒）：low/游戏 20ms（≈1 帧），music 80ms，high 160ms，custom 自定义 */
-    private int udpBufferMs(String buffer, int mode) {
-        if (buffer != null && buffer.startsWith("custom:")) {
+    static int udpBufferMs(String str, int i) {
+        if (str != null && str.startsWith("custom:")) {
             try {
-                return Math.max(20, Integer.parseInt(buffer.substring(7)));
-            } catch (NumberFormatException ignored) {
+                return Math.max(20, Integer.parseInt(str.substring(7)));
+            } catch (NumberFormatException unused) {
             }
         }
-        if ("low".equals(buffer)) return 20;   // 1 帧@48k≈21.3ms
-        if ("high".equals(buffer)) return 160;
-        return mode == 1 ? 20 : 80;           // auto: game 20ms / music 80ms
+        if ("low".equals(str)) {
+            return 20;
+        }
+        if ("high".equals(str)) {
+            return 80;
+        }
+        return i == 1 ? 20 : 40;
     }
 
-    /** 包时长估算：PCM 按字节数精确换算；编码流按 20ms/帧 */
-    private static long pktMs(int len, boolean isPcm, long frameBytes, int rate) {
-        return isPcm ? (long) len * 1000 / (frameBytes * rate) : 20;
+    /* JADX INFO: Access modifiers changed from: private */
+    public static long pktMs(int i, boolean z, long j, int i2) {
+        if (z) {
+            return (i * 1000) / (j * i2);
+        }
+        return 20L;
     }
 
-    private boolean isMagic(byte[] d, int o) {
-        return d[o] == 'W' && d[o + 1] == 'F' && d[o + 2] == 'A' && d[o + 3] == 'U';
+    private boolean isMagic(byte[] bArr, int i) {
+        return bArr[i] == 87 && bArr[i + 1] == 70 && bArr[i + 2] == 65 && bArr[i + 3] == 85;
     }
-
-    // ============ 音频播放（AudioTrack + 可选解码） ============
 
     private static final class AudioSink {
+        int bufferMs;
+        int channels;
+        volatile long outFrames;
+        int rate;
+        volatile long receivedBytes;
         AudioTrack track;
-        MediaCodec dec;
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        int bufferMs = -1;
-        long opusHandle = 0;  // libopus 软解 handle
-        long aacHandle = 0;   // fdk-aac 软解 handle
-        private String lastErr = "";
-        private int lastErrCount = 0;
-        // 统计
-        volatile long writtenFrames = 0;   // 已写入 AudioTrack 的累计帧数
-        volatile long receivedBytes = 0;   // 累计接收字节
-        volatile long decodedFrames = 0;   // 解码输出帧数（编码模式）
-        int rate = 48000;
-        int channels = 2;
+        volatile long writtenFrames;
 
-        /** 提交 OpusHead / AudioSpecificConfig 作为 CODEC_CONFIG */
-        void setOpusHead(byte[] data, int len) {
-            if (dec == null) return;
-            addLog("提交 csd-0 给解码器 (" + len + "B)");
-            try {
-                int inIdx = dec.dequeueInputBuffer(20000);
-                if (inIdx < 0) {
-                    addLog("警告: dequeueInputBuffer 失败 " + inIdx);
-                    return;
-                }
-                ByteBuffer ib = dec.getInputBuffer(inIdx);  // 每次获取最新 buffer（标准用法）
-                ib.clear();
-                ib.put(data, 0, len);
-                dec.queueInputBuffer(inIdx, 0, len, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
-                addLog("csd-0 已提交");
-            } catch (Throwable t) {
-                addLog("setOpusHead 错误: " + t.getMessage());
-                Log.e(TAG, "setOpusHead error", t);
-            }
+        private AudioSink() {
+            this.bufferMs = -1;
+            this.writtenFrames = 0L;
+            this.receivedBytes = 0L;
+            this.outFrames = 0L;
+            this.rate = 48000;
+            this.channels = 2;
         }
 
-        /** fdk-aac 软解初始化 */
-        void startAacSoft(int rate, int channels, byte[] csd0) {
-            aacHandle = AacDecoder.init(rate, channels, csd0);
-            if (aacHandle != 0) {
-                addLog("fdk-aac 软解就绪 (rate=" + rate + " ch=" + channels + ", handle=" + aacHandle + ")");
-            } else {
-                addLog("fdk-aac 初始化失败（详见 logcat AacSoft）");
-                aacHandle = 0; // 防野指针
-            }
-        }
-
-        /** fdk-aac 软解一帧 ADTS */
-        void writeAac(byte[] data, int len) {
-            if (aacHandle == 0) return;
-            receivedBytes += len;
-            try {
-                short[] pcm = new short[1024 * 2];
-                int samples = AacDecoder.decode(aacHandle, data, len, pcm);
-                if (samples > 0) {
-                    byte[] out = new byte[samples * channels * 2];
-                    for (int i = 0; i < samples * channels; i++) {
-                        short v = pcm[i];
-                        out[i * 2] = (byte) (v & 0xFF);
-                        out[i * 2 + 1] = (byte) (v >> 8);
-                    }
-                    if (track != null) track.write(out, 0, out.length);
-                    writtenFrames += samples;
-                    decodedFrames++;
-                } else if (samples < 0) {
-                    addLog("aac 解码错误码: " + samples);
-                }
-            } catch (Throwable t) {
-                addLog("fdk-aac 解码错误: " + t.getMessage());
-            }
-        }
-
-        /** libopus 软解初始化 */
-        void startOpusSoft(int rate, int channels) {
-            opusHandle = OpusDecoder.init(rate, channels);
-            if (opusHandle != 0) {
-                addLog("libopus 软解就绪 (rate=" + rate + " ch=" + channels + ")");
-            } else {
-                addLog("libopus 软解初始化失败!");
-            }
-        }
-
-        /** libopus 软解一帧 */
-        void writeOpus(byte[] data, int len) {
-            if (opusHandle == 0) return;
-            receivedBytes += len;
-            try {
-                short[] pcm = new short[960 * 2]; // 最多 960 采样/声道
-                int samples = OpusDecoder.decode(opusHandle, data, len, pcm);
-                if (samples > 0) {
-                    byte[] out = new byte[samples * channels * 2];
-                    for (int i = 0; i < samples * channels; i++) {
-                        short v = pcm[i];
-                        out[i * 2] = (byte) (v & 0xFF);
-                        out[i * 2 + 1] = (byte) (v >> 8);
-                    }
-                    if (track != null) track.write(out, 0, out.length);
-                    writtenFrames += samples;
-                    decodedFrames++;
-                } else if (samples < 0) {
-                    addLog("opus 解码错误码: " + samples);
-                }
-            } catch (Throwable t) {
-                addLog("libopus 解码错误: " + t.getMessage());
-            }
-        }
-
-        void setVolume(int volume) {
-            if (track != null) {
+        void setVolume(int i) {
+            AudioTrack audioTrack = this.track;
+            if (audioTrack != null) {
                 try {
-                    track.setVolume(volume / 100f);
-                } catch (Throwable ignored) {
+                    audioTrack.setVolume(i / 100.0f);
+                } catch (Throwable unused) {
                 }
             }
         }
 
-        void writePcm(byte[] data, int len) {
-            if (track != null) track.write(data, 0, len);
-            writtenFrames += len / (channels * 2);
-            receivedBytes += len;
-        }
-
-        void writeEncoded(byte[] data, int len) {
-            if (dec == null) return;
-            receivedBytes += len;
-            try {
-                int inIdx = dec.dequeueInputBuffer(20000);
-                if (inIdx < 0) return;
-                ByteBuffer ib = dec.getInputBuffer(inIdx);  // 每次获取最新 buffer（标准用法）
-                ib.clear();
-                ib.put(data, 0, len);
-                dec.queueInputBuffer(inIdx, 0, len, System.nanoTime() / 1000, 0);
-                while (true) {
-                    int outIdx = dec.dequeueOutputBuffer(info, 0);
-                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        // ignore
-                    } else if (outIdx >= 0) {
-                        ByteBuffer ob = dec.getOutputBuffer(outIdx);  // 每次获取最新 buffer
-                        ob.position(info.offset);
-                        ob.limit(info.offset + info.size);
-                        byte[] pcm = new byte[info.size];
-                        ob.get(pcm);
-                        if (track != null) track.write(pcm, 0, pcm.length);
-                        writtenFrames += info.size / (channels * 2);
-                        decodedFrames++;
-                        dec.releaseOutputBuffer(outIdx, false);
-                    } else {
-                        break;
-                    }
-                }
-            } catch (Throwable t) {
-                String msg = t.getMessage() != null ? t.getMessage() : t.toString();
-                // 详细日志：异常 + 前 3 行堆栈
-                String stack = "";
-                StackTraceElement[] st = t.getStackTrace();
-                for (int i = 0; i < Math.min(3, st.length); i++) stack += "  at " + st[i] + "\n";
-                if (!msg.equals(lastErr)) {
-                    lastErr = msg;
-                    lastErrCount = 1;
-                    addLog("解码错误: " + msg + "\n" + stack.trim());
-                } else {
-                    lastErrCount++;
-                    if (lastErrCount == 10 || lastErrCount % 100 == 0) {
-                        addLog("解码错误 (重复 " + lastErrCount + " 次): " + msg);
-                    }
-                }
-                Log.e(TAG, "decode error", t);
+        void writePcm(byte[] bArr, int i) {
+            int iWrite;
+            AudioTrack audioTrack = this.track;
+            if (audioTrack != null && (iWrite = audioTrack.write(bArr, 0, i)) > 0) {
+                this.outFrames += iWrite / (this.channels * 2);
             }
+            this.writtenFrames += i / (this.channels * 2);
+            this.receivedBytes += i;
         }
 
-        /** 当前 AudioTrack 缓冲中未播放的毫秒数（实时） */
         int getBufferMs() {
-            if (track == null) return 0;
-            long head = track.getPlaybackHeadPosition();
-            long buffered = writtenFrames - head;
-            if (buffered < 0) buffered = 0;
-            return (int) (buffered * 1000 / rate);
+            return (int) ((bufferedFrames() * 1000) / this.rate);
+        }
+
+        long bufferedFrames() {
+            if (this.track == null) {
+                return 0L;
+            }
+            long playbackHeadPosition = r0.getPlaybackHeadPosition() & 4294967295L;
+            long jPcmBufferedFrames = PlayerService.pcmBufferedFrames(this.outFrames, playbackHeadPosition, this.rate * 2);
+            if (jPcmBufferedFrames >= 0) {
+                return jPcmBufferedFrames;
+            }
+            this.outFrames = playbackHeadPosition;
+            return 0L;
         }
 
         void release() {
-            if (track != null) {
-                try { track.stop(); } catch (Throwable ignored) {}
-                try { track.release(); } catch (Throwable ignored) {}
-                track = null;
-            }
-            if (dec != null) {
-                try { dec.stop(); dec.release(); } catch (Throwable ignored) {}
-                dec = null;
-            }
-            if (opusHandle != 0) {
-                try { OpusDecoder.destroy(opusHandle); } catch (Throwable ignored) {}
-                opusHandle = 0;
-            }
-            if (aacHandle != 0) {
-                try { AacDecoder.destroy(aacHandle); } catch (Throwable ignored) {}
-                aacHandle = 0;
-            }
-        }
-    }
-
-    /**
-     * PCM 自适应抖动缓冲。
-     * 网络线程只负责入队（write），独立播放线程按 AudioTrack 消费节奏出队写音频。
-     * 特性：
-     *  - 预缓冲：连接后攒够目标水位再开始出声，避免开场卡顿
-     *  - 自适应水位：按数据到达抖动(EWMA)动态调深浅 —— 网络稳则自动收缩延迟，抖则自动加深防卡
-     *  - 过载丢帧：水位超限时丢最旧数据（快进追赶），防止缓冲无限膨胀导致延迟飙升
-     *  - 漂移伺服：发送/接收端时钟漂移导致水位持续偏高时，小步丢帧拉回
-     */
-    final class PcmJitterBuffer {
-        final AudioSink sink;
-        final AudioOut out;   // PCM 可选 AAudio 输出（null=走 sink/AudioTrack）
-        final int rate, channels, frameBytes;   // frameBytes = 每帧字节数(PCM16)
-        final int minMs, maxMs;                 // 自适应范围
-        final boolean adaptive;                 // custom 档位固定目标，不自动调节
-        final java.util.ArrayDeque<byte[]> queue = new java.util.ArrayDeque<byte[]>();
-        long queuedFrames;                      // 队列中帧数
-        volatile int targetMs;                  // 当前目标水位
-        // 到达间隔抖动 EWMA
-        long lastArrivalNanos;
-        double jitterEwma;                      // |gap-avgGap| 的 EWMA
-        double avgGapMs;                        // 平均到达间隔
-        // 统计
-        volatile long arrivedBytes;             // 数据到达字节数（用于采样率/码率计算）
-        volatile int jitterMs;                  // 当前抖动估计
-        volatile int currentMs;                 // 当前总缓冲（队列 + AudioTrack 内部）
-        volatile long droppedFrames;            // 累计跳帧（帧）
-        volatile long underruns;                // 累计欠载次数
-        // 漂移伺服
-        long lastAdaptNanos;
-        int overTargetStreak;
-        volatile long lastUnderrunTime;   // 最近一次欠载时间（自适应驱动依据）
-
-        final Thread playThread = new Thread(new Runnable() {
-            @Override
-            public void run() { playLoop(); }
-        }, "pcm-jitter");
-        volatile boolean closed;
-
-        PcmJitterBuffer(AudioSink sink, AudioOut out, int rate, int channels, int baseMs, boolean adaptive) {
-            this.sink = sink;
-            this.out = out;
-            this.rate = rate;
-            this.channels = channels;
-            this.frameBytes = channels * 2; // PCM16
-            this.adaptive = adaptive;
-            if (!adaptive) {
-                this.minMs = this.maxMs = Math.max(20, baseMs);
-            } else if (baseMs <= 40) {
-                this.minMs = 25; this.maxMs = 60;     // 游戏：低延迟优先
-            } else if (baseMs <= 80) {
-                this.minMs = 40; this.maxMs = 100;    // 默认：缓冲上限收紧
-            } else {
-                this.minMs = 80; this.maxMs = 160;    // 高音质
-            }
-            this.targetMs = Math.max(20, baseMs);
-        }
-
-        void start() { playThread.start(); }
-
-        void close() {
-            closed = true;
-            playThread.interrupt();
-            try { playThread.join(500); } catch (InterruptedException ignored) {}
-        }
-
-        /** 网络线程：PCM 数据入队（不直接写 AudioTrack） */
-        synchronized void write(byte[] data, int len) {
-            if (closed || len <= 0) return;
-            arrivedBytes += len;
-            // 到达间隔抖动统计（稳定网络时 jitterEwma 小，抖动时大）
-            long now = System.nanoTime();
-            if (lastArrivalNanos != 0) {
-                double gapMs = (now - lastArrivalNanos) / 1e6;
-                if (gapMs > 0.1 && gapMs < 2000) {
-                    avgGapMs = (avgGapMs == 0) ? gapMs : avgGapMs * 0.95 + gapMs * 0.05;
-                    double dev = Math.abs(gapMs - avgGapMs);
-                    jitterEwma = (jitterEwma == 0) ? dev : jitterEwma * 0.9 + dev * 0.1;
-                }
-            }
-            lastArrivalNanos = now;
-            byte[] copy = new byte[len];
-            System.arraycopy(data, 0, copy, 0, len);
-            queue.addLast(copy);
-            queuedFrames += len / frameBytes;
-            // 过载丢帧：队列水位 > 目标+40ms 时丢最旧（快进追赶）
-            long maxQueued = (targetMs + 40) * (long) rate / 1000;
-            while (queuedFrames > maxQueued) {
-                byte[] old = queue.pollFirst();
-                if (old == null) break;
-                queuedFrames -= old.length / frameBytes;
-                droppedFrames += old.length / frameBytes;
-            }
-        }
-
-        /** 播放线程：取队首一块 */
-        private synchronized byte[] pollChunk() {
-            if (queue.isEmpty()) return null;
-            byte[] head = queue.pollFirst();
-            queuedFrames -= head.length / frameBytes;
-            return head;
-        }
-
-        /** 播放线程：小步丢帧（漂移伺服，最多丢 10ms） */
-        private synchronized void dropSamples(long frames) {
-            long need = frames;
-            while (need > 0 && !queue.isEmpty()) {
-                byte[] head = queue.pollFirst();
-                long hf = head.length / frameBytes;
-                long take = Math.min(hf, need);
-                if (take < hf) {
-                    int keepBytes = (int) ((hf - take) * frameBytes);
-                    byte[] rest = new byte[keepBytes];
-                    System.arraycopy(head, (int) (take * frameBytes), rest, 0, keepBytes);
-                    queue.addFirst(rest);
-                    queuedFrames -= take;
-                    droppedFrames += take;
-                    need = 0;
-                } else {
-                    queuedFrames -= hf;
-                    droppedFrames += hf;
-                    need -= hf;
-                }
-            }
-        }
-
-        private void playLoop() {
-            // 预缓冲：攒够目标水位再出声（最长等 2.5s，避免弱网长时间无声）
-            long waitStart = System.nanoTime();
-            while (!closed) {
-                long q;
-                synchronized (this) { q = queuedFrames; }
-                if (q * 1000 / rate >= targetMs) break;
-                if ((System.nanoTime() - waitStart) / 1e6 > 2500) break;
-                try { Thread.sleep(10); } catch (InterruptedException e) { return; }
-            }
-            while (!closed) {
-                byte[] chunk = pollChunk();
-                if (chunk == null) {
-                    underruns++;
-                    lastUnderrunTime = System.currentTimeMillis();
-                    try { Thread.sleep(10); } catch (InterruptedException e) { break; }
-                    continue;
+            AudioTrack audioTrack = this.track;
+            if (audioTrack != null) {
+                try {
+                    audioTrack.stop();
+                } catch (Throwable unused) {
                 }
                 try {
-                    if (out != null) {
-                        out.writePcmBytes(chunk, chunk.length); // AAudio 低延迟输出
-                    } else {
-                        sink.writePcm(chunk, chunk.length); // 阻塞式，AudioTrack 自然节流
-                    }
-                } catch (Throwable ignored) {
+                    this.track.release();
+                } catch (Throwable unused2) {
                 }
-                maybeAdapt();
+                this.track = null;
             }
         }
+    }
 
-        /** 周期性（≥500ms）：自适应水位（欠载驱动）+ 漂移伺服 + 统计刷新 */
-        private void maybeAdapt() {
-            long now = System.nanoTime();
-            if (lastAdaptNanos != 0 && (now - lastAdaptNanos) / 1e6 < 500) return;
-            lastAdaptNanos = now;
-            jitterMs = (int) Math.round(jitterEwma);
-            int queuedMs;
-            synchronized (this) { queuedMs = (int) (queuedFrames * 1000 / rate); }
-            if (adaptive) {
-                // 欠载驱动：只有真正发生欠载（队列空/播放中断）才加深；
-                // TCP 攒包造成的到达间隔波动不加深。稳定则收缩。
-                boolean recentUnderrun = System.currentTimeMillis() - lastUnderrunTime < 3000;
-                if (recentUnderrun) {
-                    targetMs = Math.min(targetMs + 10, maxMs);
-                } else if (targetMs > minMs) {
-                    targetMs = Math.max(targetMs - 10, minMs);
-                }
+    static void fadeAndTrack(byte[] bArr, int i, int i2, int i3, int i4, boolean z, short[] sArr) {
+        byte[] bArr2;
+        int i5;
+        int i6;
+        int i7;
+        int i8;
+        if (z) {
+            bArr2 = bArr;
+            i5 = i;
+            i6 = i2;
+            i7 = i3;
+            applyFadeToChunk(bArr2, i5, i6, i7, i4, sArr[0], sArr[1]);
+        } else {
+            bArr2 = bArr;
+            i5 = i;
+            i6 = i2;
+            i7 = i3;
+        }
+        int i9 = i5 / i6;
+        if (i9 > 0) {
+            int i10 = (i9 - 1) * i6;
+            sArr[0] = (short) ((bArr2[i10] & UByte.MAX_VALUE) | (bArr2[i10 + 1] << 8));
+            if (i7 < 2 || (i8 = i10 + 3) >= i5) {
+                return;
             }
-            // 漂移伺服：队列水位持续 > 目标+40ms 超过 2 秒 → 小步丢 5ms
-            if (queuedMs > targetMs + 40) {
-                overTargetStreak++;
-                if (overTargetStreak >= 4) {
-                    dropSamples(rate / 200); // 5ms
-                    overTargetStreak = 0;
+            sArr[1] = (short) ((bArr2[i10 + 2] & UByte.MAX_VALUE) | (bArr2[i8] << 8));
+        }
+    }
+
+    static void applyFadeToChunk(byte[] bArr, int i, int i2, int i3, int i4, short s, short s2) {
+        int iMin = Math.min(i4, i / i2);
+        if (iMin <= 0) {
+            return;
+        }
+        int i5 = 0;
+        while (i5 < iMin) {
+            int i6 = i5 * i2;
+            i5++;
+            double d = i5 / iMin;
+            double d2 = 1.0d - d;
+            int iRound = (int) Math.round((s * d2) + (((short) ((bArr[i6] & UByte.MAX_VALUE) | (bArr[r5] << 8))) * d));
+            bArr[i6] = (byte) (iRound & 255);
+            bArr[i6 + 1] = (byte) ((iRound >> 8) & 255);
+            if (i3 >= 2) {
+                int i7 = i6 + 2;
+                int iRound2 = (int) Math.round((s2 * d2) + (((short) ((bArr[i7] & UByte.MAX_VALUE) | (bArr[r1] << 8))) * d));
+                bArr[i7] = (byte) (iRound2 & 255);
+                bArr[i6 + 3] = (byte) ((iRound2 >> 8) & 255);
+            }
+        }
+    }
+
+    static int writeBudgetFrames(int i, int i2, int i3) {
+        if (i <= 0 || i3 <= 0) {
+            return 0;
+        }
+        if (i2 < 0) {
+            i2 = 0;
+        }
+        long j = i;
+        int i4 = (int) (((i3 - i2) * j) / 1000);
+        if (i4 <= 0) {
+            return 0;
+        }
+        int i5 = (int) ((j * 10) / 1000);
+        if (i5 < 1) {
+            i5 = 1;
+        }
+        return Math.min(i4, i5);
+    }
+
+    static int adaptWriteAheadMs(int i, long j, boolean z) {
+        if (j <= 0 || z) {
+            return i;
+        }
+        int i2 = ((j > 2 ? 2 : 1) * 10) + i;
+        if (i2 > 60) {
+            i2 = 60;
+        }
+        return Math.max(i, i2);
+    }
+
+    private static final class WriteAheadGovernor {
+        private long lastCheckMs;
+        private long lastQueueUnderruns;
+        private int lastUnderruns;
+        volatile int ms;
+
+        private WriteAheadGovernor() {
+            this.ms = 30;
+            this.lastUnderruns = -1;
+        }
+
+        void observe(AudioSink audioSink, long j) {
+            long jCurrentTimeMillis = System.currentTimeMillis();
+            if (jCurrentTimeMillis - this.lastCheckMs < 500) {
+                return;
+            }
+            this.lastCheckMs = jCurrentTimeMillis;
+            if (audioSink == null || audioSink.track == null) {
+                return;
+            }
+            try {
+                int underrunCount = audioSink.track.getUnderrunCount();
+                int i = this.lastUnderruns;
+                if (i >= 0 && underrunCount > i) {
+                    long j2 = underrunCount - i;
+                    boolean z = j > this.lastQueueUnderruns;
+                    int i2 = this.ms;
+                    this.ms = PlayerService.adaptWriteAheadMs(this.ms, j2, z);
+                    if (this.ms != i2) {
+                        PlayerService.logStatic("输出设备欠载 +" + j2 + "（累计 " + underrunCount + "）→ 写前量自动放宽 " + i2 + "→" + this.ms + "ms（延迟会相应增加，这是为了先保证不断音）");
+                    } else if (!z) {
+                        PlayerService.logStatic("输出设备欠载 +" + j2 + "（累计 " + underrunCount + "）但写前量已是上限 " + this.ms + "ms，建议把「缓冲」档位调高一档");
+                    }
                 }
+                this.lastUnderruns = underrunCount;
+                this.lastQueueUnderruns = j;
+            } catch (Throwable unused) {
+            }
+        }
+    }
+
+    static int adaptTargetMs(int i, int i2, int i3, boolean z) {
+        if (z) {
+            return Math.min(i + 10, i3);
+        }
+        return Math.max(i - 10, i2);
+    }
+
+    static boolean pcmBitrateSane(int i, int i2, int i3) {
+        if (i2 <= 0 || i3 <= 0) {
+            return true;
+        }
+        long j = ((i2 * 16) * i3) / 1000;
+        return j <= 0 || Math.abs(((long) i) - j) <= Math.max(64L, j / 5);
+    }
+
+    static String aaudioFallbackNote(boolean z, int i, int i2) {
+        StringBuilder sb = new StringBuilder(z ? "AAudio 打开失败" : "AAudio 已失效回退");
+        if (i2 > 0 && i > 0 && i2 != i) {
+            sb.append("：本机原生 ").append(i2 / 1000).append("kHz 与流的 ").append(i / 1000).append("kHz 不符（AAudio 不做重采样，独占被拒时会降级到本机原生采样率）");
+        } else if (i > 48000) {
+            sb.append("；流 ").append(i / 1000).append("kHz，建议把发射端采样率设为 48kHz");
+        }
+        return sb.toString();
+    }
+
+    private static void noteArrival() {
+        long jCurrentTimeMillis = System.currentTimeMillis();
+        long j = lastArrivalAtMs != 0 ? jCurrentTimeMillis - lastArrivalAtMs : 0L;
+        lastArrivalAtMs = jCurrentTimeMillis;
+        if (j > statMaxArrivalGapMs) {
+            statMaxArrivalGapMs = j;
+        }
+    }
+
+    static String jitterBufferAdvice(int i, int i2) {
+        if (i <= 0 || i2 <= 0 || i <= i2 + 12) {
+            return null;
+        }
+        return "链路到达间隔最大 " + i + "ms，超过当前缓冲档位 " + i2 + "ms —— 该档位会周期性被吃空（断续）。建议把「缓冲」调到 ≥" + (((i + 9) / 10) * 10) + "ms，或改用 5G / 缩短距离";
+    }
+
+    /* JADX INFO: Access modifiers changed from: private */
+    public int deviceNativeRate() {
+        String property;
+        try {
+            AudioManager audioManager = (AudioManager) getSystemService("audio");
+            if (audioManager == null || (property = audioManager.getProperty("android.media.property.OUTPUT_SAMPLE_RATE")) == null) {
+                return 0;
+            }
+            return Integer.parseInt(property.trim());
+        } catch (Throwable unused) {
+            return 0;
+        }
+    }
+
+    final class PcmJitterBuffer {
+        static final int QUEUE_MARGIN_MS = 12;
+        final boolean adaptive;
+        volatile long arrivedBytes;
+        double avgGapMs;
+        final int channels;
+        volatile boolean closed;
+        volatile long droppedFrames;
+        final int fadeFrames;
+        final int frameBytes;
+        double jitterEwma;
+        volatile int jitterMs;
+        long lastAdaptNanos;
+        long lastArrivalNanos;
+        long lastJitterWarnTime;
+        short lastL;
+        short lastR;
+        volatile long lastUnderrunTime;
+        final int maxMs;
+        final int minMs;
+        volatile AudioOut out;
+        int overTargetStreak;
+        long queuedFrames;
+        final int rate;
+        final AudioSink sink;
+        volatile int targetMs;
+        boolean throttleBypass;
+        long throttleSinceNanos;
+        volatile long underruns;
+        final ArrayDeque<byte[]> queue = new ArrayDeque<>();
+        volatile boolean needsFade = true;
+        final Thread playThread = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.PcmJitterBuffer.1
+            @Override // java.lang.Runnable
+            public void run() throws InterruptedException {
+                PcmJitterBuffer.this.playLoop();
+            }
+        }, "pcm-jitter");
+        final WriteAheadGovernor ahead = new WriteAheadGovernor();
+
+        PcmJitterBuffer(AudioSink audioSink, AudioOut audioOut, int i, int i2, int i3, boolean z) {
+            this.sink = audioSink;
+            this.out = audioOut;
+            this.rate = i;
+            this.channels = i2;
+            this.frameBytes = i2 * 2;
+            this.adaptive = z;
+            if (!z) {
+                int iMax = Math.max(20, i3);
+                this.maxMs = iMax;
+                this.minMs = iMax;
             } else {
-                overTargetStreak = 0;
+                int iMax2 = Math.max(20, (i3 * 3) / 5);
+                this.minMs = iMax2;
+                this.maxMs = Math.max(iMax2 + 40, i3 * 2);
             }
-            // 当前总缓冲（队列 + 输出端内部未播放）
-            currentMs = queuedMs + (out != null ? out.getBufferMs() : sink.getBufferMs());
+            this.targetMs = Math.max(20, i3);
+            this.fadeFrames = Math.max(8, i / 500);
         }
-    }
 
-    /** 从 ADTS 头提取 AudioSpecificConfig (csd-0) —— 标准格式，audioObjectType 直接存值 */
-    private static byte[] buildCsdFromAdts(byte[] f) {
-        int b2 = f[2] & 0xFF;
-        int b3 = f[3] & 0xFF;
-        int profile = (b2 >> 6) & 0x03;      // 0=Main 1=LC 2=SSR 3=LTP
-        int sfIdx = (b2 >> 2) & 0x0F;
-        int chanCfg = ((b2 & 0x03) << 2) | ((b3 >> 6) & 0x03);
-        int objectType = profile + 1;        // AAC-LC = 2
-        // 标准 AudioSpecificConfig（5 字节，AAC-LC 的 GASpecificConfig 为 0）
-        byte[] csd = new byte[5];
-        csd[0] = (byte) ((objectType << 3) | (sfIdx >> 1));
-        csd[1] = (byte) (((sfIdx & 1) << 7) | (chanCfg << 3));
-        csd[2] = 0;
-        csd[3] = 0;
-        csd[4] = 0;
-        return csd;
-    }
-
-    /** 计算 AudioTrack 缓冲字节数（档位或自定义毫秒） */
-    private static int computeBufferBytes(int rate, int channels, String buffer, int mode, boolean isPcm) {
-        int chMask = channels >= 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
-        int minBuf = AudioTrack.getMinBufferSize(rate, chMask, AudioFormat.ENCODING_PCM_16BIT);
-        if (isPcm) {
-            // PCM 路径：抖动由 PcmJitterBuffer / UDP 队列负责，AudioTrack 内部缓冲压到最小（仅满足播放）
-            return Math.max(minBuf, 4096);
+        void start() {
+            this.playThread.start();
         }
-        int customMs = -1;
-        if (buffer != null && buffer.startsWith("custom:")) {
+
+        void close() throws InterruptedException {
+            this.closed = true;
+            this.playThread.interrupt();
             try {
-                customMs = Integer.parseInt(buffer.substring(7));
-            } catch (NumberFormatException ignored) {
+                this.playThread.join(500L);
+            } catch (InterruptedException unused) {
             }
         }
-        if (customMs > 0) {
-            return Math.max(minBuf, (int) Math.round(rate * 2.0 * (channels >= 2 ? 2 : 1) * customMs / 1000.0));
-        }
-        int mult = "low".equals(buffer) ? 2 : ("high".equals(buffer) ? 6 : (mode == 1 ? 2 : 4));
-        return Math.max(minBuf * mult, 8192);
-    }
 
-    /** 创建带 csd-0 的 AAC 解码播放器 */
-    private AudioSink createSinkAac(int rate, int channels, String buffer, int mode, byte[] csd0) throws Exception {
-        AudioSink sink = new AudioSink();
-        currentSink = sink;
-        addLog("创建 AAC 解码器 (MediaFormat csd-0=" + csd0.length + "B, rate=" + rate + ", ch=" + channels + ")");
-        int chMask = channels >= 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
-        AudioTrack.Builder tb = new AudioTrack.Builder()
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build())
-                .setAudioFormat(new AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(rate)
-                        .setChannelMask(chMask)
-                        .build())
-                .setBufferSizeInBytes(computeBufferBytes(rate, channels, buffer, mode, false))
-                .setTransferMode(AudioTrack.MODE_STREAM);
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                tb.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
-            } catch (Throwable ignored) {
-            }
-        }
-        sink.track = tb.build();
-        sink.track.play();
-        sink.bufferMs = (int) Math.round(sink.track.getBufferSizeInFrames() * 1000.0 / rate);
-
-        MediaFormat fmt = MediaFormat.createAudioFormat("audio/mp4a-latm", rate, channels);
-        fmt.setByteBuffer("csd-0", ByteBuffer.wrap(csd0));
-        // 硬解可能需要显式参数
-        try {
-            fmt.setInteger(MediaFormat.KEY_CHANNEL_MASK,
-                    channels >= 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO);
-        } catch (Throwable ignored) {
-        }
-        try {
-            fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-        } catch (Throwable ignored) {
-        }
-        try {
-            sink.dec = MediaCodec.createDecoderByType("audio/mp4a-latm");
-            addLog("AAC createDecoderByType OK");
-        } catch (Throwable t) {
-            addLog("AAC createDecoderByType 失败: " + t);
-            throw t;
-        }
-        try {
-            sink.dec.configure(fmt, null, null, 0);
-            addLog("AAC configure OK");
-            sink.dec.start();
-            addLog("AAC start OK");
-        } catch (Throwable t) {
-            addLog("AAC configure/start 失败: " + t);
-            throw t;
-        }
-        return sink;
-    }
-
-    /** 创建带 csd-0（OpusHead）的 OPUS 解码播放器 */
-    private AudioSink createSinkOpus(int rate, int channels, String buffer, int mode, byte[] opusHead) throws Exception {
-        AudioSink sink = new AudioSink();
-        currentSink = sink;
-        int chMask = channels >= 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
-        AudioTrack.Builder tb = new AudioTrack.Builder()
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build())
-                .setAudioFormat(new AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(rate)
-                        .setChannelMask(chMask)
-                        .build())
-                .setBufferSizeInBytes(computeBufferBytes(rate, channels, buffer, mode, false))
-                .setTransferMode(AudioTrack.MODE_STREAM);
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                tb.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
-            } catch (Throwable ignored) {
-            }
-        }
-        sink.track = tb.build();
-        sink.track.play();
-        sink.bufferMs = (int) Math.round(sink.track.getBufferSizeInFrames() * 1000.0 / rate);
-
-        addLog("创建 OPUS 解码器 (MediaFormat csd-0=" + opusHead.length + "B)");
-        MediaFormat fmt = MediaFormat.createAudioFormat("audio/opus", rate, channels);
-        fmt.setByteBuffer("csd-0", ByteBuffer.wrap(opusHead));
-        sink.dec = MediaCodec.createDecoderByType("audio/opus");
-        sink.dec.configure(fmt, null, null, 0);
-        sink.dec.start();
-        addLog("OPUS 解码器已启动");
-        return sink;
-    }
-
-    private AudioSink createSink(int codecType, int rate, int channels, String buffer, int mode) throws Exception {
-        AudioSink sink = new AudioSink();
-        currentSink = sink;
-        int chMask = channels >= 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
-        int minBuf = AudioTrack.getMinBufferSize(rate, chMask, AudioFormat.ENCODING_PCM_16BIT);
-
-        AudioTrack.Builder tb = new AudioTrack.Builder()
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build())
-                .setAudioFormat(new AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(rate)
-                        .setChannelMask(chMask)
-                        .build())
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(computeBufferBytes(rate, channels, buffer, mode, codecType == 0));
-        // 低延迟模式（Android 8+ fast mixer 路径）
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                tb.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
-            } catch (Throwable ignored) {
-            }
-        }
-        sink.track = tb.build();
-        sink.track.play();
-
-        // 记录实际缓冲（毫秒），供状态显示
-        sink.bufferMs = (int) Math.round(sink.track.getBufferSizeInFrames() * 1000.0 / rate);
-
-        if (codecType != 0) {
-            String mime = codecType == 2 ? "audio/opus" : "audio/mp4a-latm";
-            addLog("创建 " + mime + " 解码器");
-            MediaFormat fmt = MediaFormat.createAudioFormat(mime, rate, channels);
-            sink.dec = MediaCodec.createDecoderByType(mime);
-            sink.dec.configure(fmt, null, null, 0);
-            sink.dec.start();
-            addLog(mime + " 解码器已启动");
-        }
-        return sink;
-    }
-
-    private void UtilLog(String msg) {
-        android.util.Log.d(TAG, msg);
-    }
-
-    // ============ 工具 ============
-
-    private static String codecName(int c) {
-        return c == 1 ? "AAC" : (c == 2 ? "OPUS" : "PCM");
-    }
-
-    private static boolean readFully(InputStream in, byte[] buf) throws IOException {
-        int off = 0;
-        while (off < buf.length) {
-            int n = in.read(buf, off, buf.length - off);
-            if (n < 0) return false;
-            off += n;
-        }
-        return true;
-    }
-
-    private static long leInt(byte[] b, int off) {
-        return (b[off] & 0xFFL) | ((b[off + 1] & 0xFFL) << 8)
-                | ((b[off + 2] & 0xFFL) << 16) | ((b[off + 3] & 0xFFL) << 24);
-    }
-
-    /** 从流中读取一个完整 ADTS 帧 */
-    private boolean readAdtsFrame(InputStream in, byte[] frame) throws IOException {
-        int b = in.read();
-        if (b < 0) return false;
-        while (b != 0xFF) {
-            b = in.read();
-            if (b < 0) return false;
-        }
-        int b2 = in.read();
-        if (b2 < 0) return false;
-        while ((b2 & 0xF6) != 0xF0) {
-            b = b2;
-            b2 = in.read();
-            if (b2 < 0) return false;
-            if (b != 0xFF) {
-                b2 = in.read();
-                if (b2 < 0) return false;
-            }
-        }
-        int b3 = in.read(), b4 = in.read();
-        if (b3 < 0 || b4 < 0) return false;
-        int b5 = in.read(), b6 = in.read(), b7 = in.read();
-        if (b5 < 0 || b6 < 0 || b7 < 0) return false;
-        int frameLen = ((b3 & 0x03) << 11) | (b4 << 3) | ((b5 >> 5) & 0x07);
-        if (frameLen < 7 || frameLen > frame.length) {
-            return readAdtsFrame(in, frame);
-        }
-        frame[0] = (byte) 0xFF; frame[1] = (byte) b2; frame[2] = (byte) b3;
-        frame[3] = (byte) b4; frame[4] = (byte) b5; frame[5] = (byte) b6; frame[6] = (byte) b7;
-        int need = frameLen - 7, off = 7;
-        while (need > 0) {
-            int n = in.read(frame, off, need);
-            if (n < 0) return false;
-            off += n;
-            need -= n;
-        }
-        return true;
-    }
-
-    private static int frameLenFromAdts(byte[] f) {
-        return ((f[3] & 0x03) << 11) | ((f[4] & 0xFF) << 3) | ((f[5] >> 5) & 0x07);
-    }
-
-    private void emit(String state, String msg, String codec, int rate, int channels) {
-        if (stateListener != null) {
-            try {
-                stateListener.onState(state, msg, codec, rate, channels);
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    // ============ 实时统计 ============
-
-    private void startStatsThread() {
-        if (statsThread != null) return;
-        statsThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                long lastBytes = 0;
-                long lastTime = System.currentTimeMillis();
-                while (running && !Thread.currentThread().isInterrupted()) {
-                    try {
-                        Thread.sleep(1000);
-                    } catch (InterruptedException e) {
-                        break;
+        synchronized void write(byte[] bArr, int i) {
+            byte[] bArrPollFirst;
+            if (!this.closed && i > 0) {
+                this.arrivedBytes += i;
+                long jNanoTime = System.nanoTime();
+                if (this.lastArrivalNanos != 0) {
+                    double d = (jNanoTime - r2) / 1000000.0d;
+                    if (d > 0.1d && d < 2000.0d) {
+                        double d2 = this.avgGapMs;
+                        double d3 = d2 == 0.0d ? d : (d2 * 0.95d) + (0.05d * d);
+                        this.avgGapMs = d3;
+                        double dAbs = Math.abs(d - d3);
+                        double d4 = this.jitterEwma;
+                        if (d4 != 0.0d) {
+                            dAbs = (dAbs * 0.1d) + (d4 * 0.9d);
+                        }
+                        this.jitterEwma = dAbs;
                     }
-                    AudioSink s = currentSink;
-                    DecoderEngine dec = currentDecoder;
-                    AudioOut out = currentOut;
-                    PcmJitterBuffer jb = currentJb;
-                    if (s == null && dec == null) continue;
-                    long now = System.currentTimeMillis();
-                    // PCM 模式用"数据到达字节数"（反映发射端真实发送速率），编码模式用已写入字节
-                    long bytes = jb != null ? jb.arrivedBytes : (s != null ? s.receivedBytes : 0);
-                    int kbps = (int) ((bytes - lastBytes) * 8 / Math.max(1, now - lastTime));
-                    lastBytes = bytes;
-                    lastTime = now;
-                    int audioMs = out != null ? out.getBufferMs()
-                            : (jb != null ? jb.currentMs : (s != null ? s.getBufferMs() : 0));
-                    if (jb != null) statJitterMs = jb.jitterMs; // PCM TCP：显示真实抖动
-                    // PCM 模式：由数据到达速率反推采样率（每帧 channels*2 字节，PCM16）
-                    if (statCodecName != null && statCodecName.equals("PCM") && statChannels > 0) {
-                        int calcRate = (int) Math.round(kbps * 1000.0 / 8 / (statChannels * 2));
-                        if (calcRate >= 8000 && calcRate <= 384000) {
-                            statRate = calcRate;
+                }
+                this.lastArrivalNanos = jNanoTime;
+                int i2 = this.frameBytes;
+                int iMax = Math.max(i2, ((int) ((this.rate * 10) / 1000)) * i2);
+                for (int i3 = 0; i3 < i; i3 += iMax) {
+                    int iMin = Math.min(iMax, i - i3);
+                    byte[] bArr2 = new byte[iMin];
+                    System.arraycopy(bArr, i3, bArr2, 0, iMin);
+                    this.queue.addLast(bArr2);
+                    this.queuedFrames += iMin / this.frameBytes;
+                }
+                long j = ((this.targetMs + 12) * this.rate) / 1000;
+                while (this.queuedFrames > j && (bArrPollFirst = this.queue.pollFirst()) != null) {
+                    this.queuedFrames -= bArrPollFirst.length / this.frameBytes;
+                    this.droppedFrames += bArrPollFirst.length / this.frameBytes;
+                    this.needsFade = true;
+                }
+            }
+        }
+
+        private synchronized byte[] pollChunk() {
+            if (this.queue.isEmpty()) {
+                return null;
+            }
+            byte[] bArrPollFirst = this.queue.pollFirst();
+            this.queuedFrames -= bArrPollFirst.length / this.frameBytes;
+            return bArrPollFirst;
+        }
+
+        int queueMs() {
+            long j;
+            synchronized (this) {
+                j = this.queuedFrames;
+            }
+            return (int) ((j * 1000) / this.rate);
+        }
+
+        private synchronized void dropSamples(long j) {
+            if (j > 0) {
+                try {
+                    this.needsFade = true;
+                } catch (Throwable th) {
+                    throw th;
+                }
+            }
+            while (j > 0) {
+                if (this.queue.isEmpty()) {
+                    break;
+                }
+                byte[] bArrPollFirst = this.queue.pollFirst();
+                long length = bArrPollFirst.length / this.frameBytes;
+                long jMin = Math.min(length, j);
+                if (jMin < length) {
+                    int i = this.frameBytes;
+                    int i2 = (int) ((length - jMin) * i);
+                    byte[] bArr = new byte[i2];
+                    System.arraycopy(bArrPollFirst, (int) (i * jMin), bArr, 0, i2);
+                    this.queue.addFirst(bArr);
+                    this.queuedFrames -= jMin;
+                    this.droppedFrames += jMin;
+                    j = 0;
+                } else {
+                    this.queuedFrames -= length;
+                    this.droppedFrames += length;
+                    j -= length;
+                }
+            }
+        }
+
+        /* JADX INFO: Access modifiers changed from: private */
+        public void playLoop() throws InterruptedException {
+            long j;
+            long jNanoTime = System.nanoTime();
+            while (!this.closed) {
+                synchronized (this) {
+                    j = this.queuedFrames;
+                }
+                if ((j * 1000) / this.rate >= this.targetMs || (System.nanoTime() - jNanoTime) / 1000000.0d > 2500.0d) {
+                    break;
+                }
+                try {
+                    Thread.sleep(10L);
+                } catch (InterruptedException unused) {
+                    return;
+                }
+            }
+            while (true) {
+                boolean z = false;
+                while (!this.closed) {
+                    AudioOut audioOut = this.out;
+                    if (audioOut != null && !audioOut.healthy()) {
+                        PlayerService.logStatic("AAudio 输出失效，切换回 AudioTrack 继续播放");
+                        PlayerService.aaudioNote = PlayerService.aaudioFallbackNote(false, this.rate, PlayerService.this.deviceNativeRate());
+                        try {
+                            audioOut.close();
+                        } catch (Throwable unused2) {
+                        }
+                        this.out = null;
+                        if (PlayerService.this.currentOut == audioOut) {
+                            PlayerService.this.currentOut = null;
+                        }
+                        audioOut = null;
+                    }
+                    if (!this.throttleBypass) {
+                        if (PlayerService.writeBudgetFrames(this.rate, audioOut != null ? audioOut.getBufferMs() : this.sink.getBufferMs(), this.ahead.ms) <= 0) {
+                            long jNanoTime2 = System.nanoTime();
+                            long j2 = this.throttleSinceNanos;
+                            if (j2 == 0) {
+                                this.throttleSinceNanos = jNanoTime2;
+                            } else if ((jNanoTime2 - j2) / AnimationKt.MillisToNanos > 400) {
+                                this.throttleBypass = true;
+                                PlayerService.logStatic("写前量限制连续 400ms 推不动（设备缓冲计数可能不可信），暂时放弃限制以保证出声");
+                            }
+                            try {
+                                Thread.sleep(2L);
+                            } catch (InterruptedException unused3) {
+                                return;
+                            }
+                        } else {
+                            this.throttleSinceNanos = 0L;
                         }
                     }
-                    // 端到端估算：发送端捕获≈40ms + 网络≈5ms + 接收端缓冲 + UDP抖动
-                    int latency = 40 + audioMs + statJitterMs + 5;
-                    int targetMs = jb != null ? jb.targetMs : 0;
-                    long dropped = jb != null ? jb.droppedFrames : 0;
-                    long underruns = jb != null ? jb.underruns : 0;
-                    String outName = out != null ? out.name() : (s != null ? "AudioTrack" : "");
-                    emitStats(kbps, audioMs, latency, targetMs, dropped, underruns, outName);
+                    byte[] bArrPollChunk = pollChunk();
+                    if (bArrPollChunk == null) {
+                        if (PlayerService.underrunStartsEpisode(z, (audioOut != null ? audioOut.getBufferMs() : this.sink.getBufferMs()) <= 12)) {
+                            this.underruns++;
+                            this.lastUnderrunTime = System.currentTimeMillis();
+                            z = true;
+                        }
+                        Thread.sleep(10L);
+                    } else {
+                        if (this.needsFade) {
+                            applyFade(bArrPollChunk, bArrPollChunk.length);
+                            this.needsFade = false;
+                        }
+                        if (audioOut != null) {
+                            try {
+                                audioOut.writePcmBytes(bArrPollChunk, bArrPollChunk.length);
+                            } catch (Throwable unused4) {
+                            }
+                        } else {
+                            this.sink.writePcm(bArrPollChunk, bArrPollChunk.length);
+                        }
+                        rememberTail(bArrPollChunk, bArrPollChunk.length);
+                        maybeAdapt();
+                    }
+                }
+                return;
+            }
+        }
+
+        private void applyFade(byte[] bArr, int i) {
+            PlayerService.applyFadeToChunk(bArr, i, this.frameBytes, this.channels, this.fadeFrames, this.lastL, this.lastR);
+        }
+
+        private void rememberTail(byte[] bArr, int i) {
+            int i2 = this.frameBytes;
+            int i3 = (i / i2) * i2;
+            if (i3 < i2) {
+                return;
+            }
+            int i4 = i3 - i2;
+            this.lastL = (short) ((bArr[i4] & UByte.MAX_VALUE) | (bArr[i4 + 1] << 8));
+            if (this.channels >= 2) {
+                this.lastR = (short) ((bArr[i4 + 3] << 8) | (bArr[i4 + 2] & UByte.MAX_VALUE));
+            }
+        }
+
+        private void maybeAdapt() {
+            int i;
+            long jNanoTime = System.nanoTime();
+            if (this.lastAdaptNanos == 0 || (jNanoTime - r2) / 1000000.0d >= 500.0d) {
+                this.lastAdaptNanos = jNanoTime;
+                this.jitterMs = (int) Math.round(this.jitterEwma);
+                if (this.adaptive && this.jitterMs > this.targetMs && this.targetMs < this.maxMs && System.currentTimeMillis() - this.lastJitterWarnTime > 10000) {
+                    this.lastJitterWarnTime = System.currentTimeMillis();
+                    PlayerService.logStatic("网络到达抖动约 " + this.jitterMs + "ms，已超过当前缓冲水位 " + this.targetMs + "ms，可能出现断续；建议把「缓冲」档位调高一档");
+                }
+                synchronized (this) {
+                    i = (int) ((this.queuedFrames * 1000) / this.rate);
+                }
+                if (this.adaptive) {
+                    this.targetMs = PlayerService.adaptTargetMs(this.targetMs, this.minMs, this.maxMs, System.currentTimeMillis() - this.lastUnderrunTime < 3000);
+                }
+                if (i > this.targetMs + 40) {
+                    int i2 = this.overTargetStreak + 1;
+                    this.overTargetStreak = i2;
+                    if (i2 >= 4) {
+                        dropSamples(this.rate / ComposerKt.invocationKey);
+                        this.overTargetStreak = 0;
+                    }
+                } else {
+                    this.overTargetStreak = 0;
+                }
+                this.ahead.observe(this.out == null ? this.sink : null, this.underruns);
+            }
+        }
+    }
+
+    /* JADX WARN: Removed duplicated region for block: B:28:0x0066  */
+    /*
+        Code decompiled incorrectly, please refer to instructions dump.
+    */
+    private static int computeBufferBytes(int i, int i2, String str, int i3, boolean z) throws NumberFormatException {
+        int i4;
+        int i5 = 4;
+        int minBufferSize = AudioTrack.getMinBufferSize(i, i2 >= 2 ? 12 : 4, 2);
+        if (z) {
+            long j = i * (i2 >= 2 ? 2 : 1) * 2;
+            return Math.max((int) (j / 100), Math.min(minBufferSize, (int) ((j * 30) / 1000)));
+        }
+        if (str == null || !str.startsWith("custom:")) {
+            i4 = -1;
+        } else {
+            try {
+                i4 = Integer.parseInt(str.substring(7));
+            } catch (NumberFormatException unused) {
+            }
+        }
+        if (i4 > 0) {
+            return Math.max(minBufferSize, (int) Math.round((((i * 2.0d) * (i2 < 2 ? 1 : 2)) * i4) / 1000.0d));
+        }
+        if (!"low".equals(str)) {
+            if ("high".equals(str)) {
+                i5 = 6;
+            } else if (i3 == 1) {
+                i5 = 2;
+            }
+        }
+        return Math.max(minBufferSize * i5, 8192);
+    }
+
+    private AudioSink createSink(int i, int i2, String str, int i3) throws Exception {
+        AudioSink audioSink = new AudioSink();
+        this.currentSink = audioSink;
+        int i4 = i2 >= 2 ? 12 : 4;
+        AudioTrack.getMinBufferSize(i, i4, 2);
+        AudioTrack.Builder bufferSizeInBytes = new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(1).setContentType(2).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(2).setSampleRate(i).setChannelMask(i4).build()).setTransferMode(1).setBufferSizeInBytes(computeBufferBytes(i, i2, str, i3, true));
+        try {
+            bufferSizeInBytes.setPerformanceMode(1);
+        } catch (Throwable unused) {
+        }
+        audioSink.track = bufferSizeInBytes.build();
+        audioSink.track.play();
+        audioSink.bufferMs = (int) Math.round((audioSink.track.getBufferSizeInFrames() * 1000.0d) / i);
+        return audioSink;
+    }
+
+    private static String codecName() {
+        return "PCM";
+    }
+
+    private static boolean readFully(InputStream inputStream, byte[] bArr) throws IOException {
+        int i = 0;
+        while (i < bArr.length) {
+            int i2 = inputStream.read(bArr, i, bArr.length - i);
+            if (i2 > 0) {
+                noteArrival();
+            }
+            if (i2 < 0) {
+                return false;
+            }
+            i += i2;
+        }
+        return true;
+    }
+
+    static int senderLatencyFromHeader(byte[] bArr, int i) {
+        if (bArr != null && i >= 0 && bArr.length >= i + 16) {
+            int i2 = ((bArr[i + 15] & UByte.MAX_VALUE) << 8) | (bArr[i + 14] & UByte.MAX_VALUE);
+            if (i2 > 0 && i2 <= 5000) {
+                return i2;
+            }
+        }
+        return 0;
+    }
+
+    private static long leInt(byte[] bArr, int i) {
+        return ((bArr[i + 3] & 255) << 24) | (bArr[i] & 255) | ((bArr[i + 1] & 255) << 8) | ((bArr[i + 2] & 255) << 16);
+    }
+
+    private void emit(String str, String str2, String str3, int i, int i2) {
+        if (stateListener != null) {
+            try {
+                stateListener.onState(str, str2, str3, i, i2);
+            } catch (Throwable unused) {
+            }
+        }
+    }
+
+    private void startStatsThread() {
+        if (this.statsThread != null) {
+            return;
+        }
+        Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.6
+            @Override // java.lang.Runnable
+            public void run() throws InterruptedException {
+                long j;
+                int bufferMs;
+                String strName;
+                String strJitterBufferAdvice;
+                int iRound;
+                long jCurrentTimeMillis = System.currentTimeMillis();
+                long j2 = 0;
+                long j3 = 0;
+                while (PlayerService.this.running && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        Thread.sleep(1000L);
+                        AudioSink audioSink = PlayerService.this.currentSink;
+                        AudioOut audioOut = PlayerService.this.currentOut;
+                        PcmJitterBuffer pcmJitterBuffer = PlayerService.this.currentJb;
+                        if (audioSink != null || pcmJitterBuffer != null) {
+                            long jCurrentTimeMillis2 = System.currentTimeMillis();
+                            if (pcmJitterBuffer != null) {
+                                j = pcmJitterBuffer.arrivedBytes;
+                            } else if (PlayerService.this.statUdpArrivedBytes > j2) {
+                                j = PlayerService.this.statUdpArrivedBytes;
+                            } else {
+                                j = audioSink != null ? audioSink.receivedBytes : j2;
+                            }
+                            int iMax = (int) (((j - j3) * 8) / Math.max(1L, jCurrentTimeMillis2 - jCurrentTimeMillis));
+                            if (audioOut != null) {
+                                bufferMs = audioOut.getBufferMs();
+                            } else {
+                                bufferMs = audioSink != null ? audioSink.getBufferMs() : 0;
+                            }
+                            int i = bufferMs >= 0 ? bufferMs : 0;
+                            int iQueueMs = pcmJitterBuffer != null ? pcmJitterBuffer.queueMs() : PlayerService.this.statJitterMs;
+                            int i2 = iQueueMs + i;
+                            if (pcmJitterBuffer != null) {
+                                PlayerService.this.statJitterMs = iQueueMs;
+                            }
+                            if (PlayerService.this.statCodecName != null && PlayerService.this.statCodecName.equals("PCM") && PlayerService.this.statHdrRate > 0 && PlayerService.this.statChannels > 0 && !PlayerService.pcmBitrateSane(iMax, PlayerService.this.statHdrRate, PlayerService.this.statChannels) && jCurrentTimeMillis2 - PlayerService.this.lastBitrateWarnAt > 10000) {
+                                PlayerService.this.lastBitrateWarnAt = jCurrentTimeMillis2;
+                                PlayerService.addLog("到达码率 " + iMax + " kbps 与 PCM 标称 " + (((PlayerService.this.statHdrRate * 16) * PlayerService.this.statChannels) / 1000) + " kbps 不符（协议头 " + (PlayerService.this.statHdrRate / 1000) + "kHz/" + PlayerService.this.statChannels + "ch）—— 到达量与应有值不一致，是队列堆积/被吃空的可疑方向，请把这条日志一并反馈");
+                            }
+                            if (PlayerService.this.statCodecName != null && PlayerService.this.statCodecName.equals("PCM") && PlayerService.this.statChannels > 0 && (iRound = (int) Math.round(((iMax * 1000.0d) / 8.0d) / (PlayerService.this.statChannels * 2))) >= 8000 && iRound <= 384000) {
+                                PlayerService.this.statRate = iRound;
+                            }
+                            PlayerService playerService = PlayerService.this;
+                            playerService.statSenderRawMs = PlayerService.senderLatencyForDisplay(playerService.senderLatencyMs);
+                            int i3 = (PlayerService.this.statSenderRawMs > 0 ? PlayerService.this.statSenderRawMs : 40) + i2 + 5;
+                            int i4 = pcmJitterBuffer != null ? pcmJitterBuffer.targetMs : PlayerService.this.statUdpTargetMs;
+                            long j4 = pcmJitterBuffer != null ? pcmJitterBuffer.droppedFrames : PlayerService.this.statUdpDroppedFrames;
+                            long j5 = pcmJitterBuffer != null ? pcmJitterBuffer.underruns : PlayerService.this.statUdpUnderruns;
+                            if (!PlayerService.this.arrivalAdviceLogged && (strJitterBufferAdvice = PlayerService.jitterBufferAdvice((int) PlayerService.statMaxArrivalGapMs, i4)) != null) {
+                                PlayerService.this.arrivalAdviceLogged = true;
+                                PlayerService.addLog(strJitterBufferAdvice);
+                            }
+                            if (audioOut != null) {
+                                strName = audioOut.name();
+                            } else {
+                                strName = audioSink != null ? "AudioTrack" : "";
+                            }
+                            if (audioOut == null && audioSink != null && PlayerService.aaudioNote != null && !PlayerService.aaudioNote.isEmpty()) {
+                                strName = strName + "（" + PlayerService.aaudioNote + "）";
+                            }
+                            PlayerService.this.emitStats(iMax, i2, i3, i4, j4, j5, strName);
+                            jCurrentTimeMillis = jCurrentTimeMillis2;
+                            j3 = j;
+                            j2 = 0;
+                        }
+                    } catch (InterruptedException unused) {
+                        return;
+                    }
                 }
             }
         }, "stats");
-        statsThread.start();
+        this.statsThread = thread;
+        thread.start();
     }
 
-    /** 播放 1kHz 测试音 1 秒（验证 AudioTrack 输出链路） */
     private void playTestTone() {
         addLog("测试音: 1kHz 正弦波 1 秒");
-        final int rate = 48000;
-        Thread t = new Thread(new Runnable() {
-            @Override
+        new Thread(new Runnable() { // from class: com.wifiaudio.receiver.PlayerService.7
+            @Override // java.lang.Runnable
             public void run() {
-                AudioTrack tt = null;
+                AudioTrack audioTrackBuild = null;
                 try {
-                    int minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                    tt = new AudioTrack.Builder()
-                            .setAudioAttributes(new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                                    .build())
-                            .setAudioFormat(new AudioFormat.Builder()
-                                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                    .setSampleRate(rate)
-                                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                    .build())
-                            .setBufferSizeInBytes(minBuf * 2)
-                            .setTransferMode(AudioTrack.MODE_STREAM)
-                            .build();
-                    tt.play();
-                    short[] buf = new short[minBuf / 2];
-                    for (int i = 0; i < buf.length; i++) {
-                        buf[i] = (short) (Math.sin(2 * Math.PI * 1000 * i / rate) * 8000);
-                    }
-                    long start = System.currentTimeMillis();
-                    while (System.currentTimeMillis() - start < 1000) {
-                        tt.write(buf, 0, buf.length);
-                    }
-                    addLog("测试音播放完成（若听到 1kHz 声音说明扬声器正常）");
-                } catch (Throwable e) {
-                    addLog("测试音失败: " + e.getMessage());
-                } finally {
-                    if (tt != null) {
+                    try {
+                        int minBufferSize = AudioTrack.getMinBufferSize(48000, 4, 2);
+                        audioTrackBuild = new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(1).build()).setAudioFormat(new AudioFormat.Builder().setEncoding(2).setSampleRate(48000).setChannelMask(4).build()).setBufferSizeInBytes(minBufferSize * 2).setTransferMode(1).build();
+                        audioTrackBuild.play();
+                        int i = minBufferSize / 2;
+                        short[] sArr = new short[i];
+                        for (int i2 = 0; i2 < i; i2++) {
+                            sArr[i2] = (short) (Math.sin((i2 * 6283.185307179586d) / 48000.0d) * 8000.0d);
+                        }
+                        long jCurrentTimeMillis = System.currentTimeMillis();
+                        while (System.currentTimeMillis() - jCurrentTimeMillis < 1000) {
+                            audioTrackBuild.write(sArr, 0, i);
+                        }
+                        PlayerService.addLog("测试音播放完成（若听到 1kHz 声音说明扬声器正常）");
+                        if (audioTrackBuild != null) {
+                            audioTrackBuild.stop();
+                            audioTrackBuild.release();
+                        }
+                    } catch (Throwable th) {
                         try {
-                            tt.stop();
-                            tt.release();
-                        } catch (Throwable ignored) {
+                            PlayerService.addLog("测试音失败: " + th.getMessage());
+                            if (audioTrackBuild != null) {
+                                audioTrackBuild.stop();
+                                audioTrackBuild.release();
+                            }
+                        } catch (Throwable th2) {
+                            if (audioTrackBuild != null) {
+                                try {
+                                    audioTrackBuild.stop();
+                                    audioTrackBuild.release();
+                                } catch (Throwable unused) {
+                                }
+                            }
+                            throw th2;
                         }
                     }
+                } catch (Throwable unused2) {
                 }
             }
-        }, "test-tone");
-        t.start();
+        }, "test-tone").start();
     }
 
-    private void emitStats(int kbps, int audioMs, int latencyMs,
-                           int targetMs, long dropped, long underruns, String output) {
-        // 内存回调（首选，UI 可靠接收）
-        StatsListener l = statsListener;
-        if (l != null) {
+    /* JADX INFO: Access modifiers changed from: private */
+    public void emitStats(int i, int i2, int i3, int i4, long j, long j2, String str) {
+        ArrayList<String> arrayList;
+        StatsListener statsListener2 = statsListener;
+        if (statsListener2 != null) {
             try {
-                java.util.ArrayList<String> logs;
-                synchronized (logBuf) {
-                    int from = Math.max(0, logBuf.size() - 30);
-                    logs = new java.util.ArrayList<String>(logBuf.subList(from, logBuf.size()));
+                List<String> list = logBuf;
+                synchronized (list) {
+                    arrayList = new ArrayList<>(list.subList(Math.max(0, list.size() - 30), list.size()));
                 }
-                l.onStats(statTransport, statCodecName, statRate, statChannels, kbps,
-                        audioMs, statJitterMs, latencyMs,
-                        (int) ((currentSink != null ? currentSink.receivedBytes : 0) / 1024),
-                        (int) (currentDecoder != null ? currentDecoder.outputFrames()
-                                : (currentSink != null ? currentSink.decodedFrames : 0)),
-                        targetMs, dropped, underruns, output, logs);
-            } catch (Throwable ignored) {
+                statsListener2.onStats(this.statTransport, this.statCodecName, this.statRate, this.statChannels, i, i2, this.statJitterMs, i3, (int) ((this.currentSink != null ? this.currentSink.receivedBytes : 0L) / 1024), (int) (this.currentSink != null ? this.currentSink.writtenFrames : 0L), i4, j, j2, str, arrayList, this.statSenderRawMs);
+            } catch (Throwable unused) {
             }
         }
-        // 广播（兼容保留）
         try {
-            Intent i = new Intent(ACTION_STATS);
-            i.putExtra(EXTRA_CUR_TRANSPORT, statTransport);
-            i.putExtra(EXTRA_CODEC, statCodecName);
-            i.putExtra(EXTRA_RATE, statRate);
-            i.putExtra(EXTRA_CHANNELS, statChannels);
-            i.putExtra(EXTRA_BITRATE, kbps);
-            i.putExtra(EXTRA_AUDIO_MS, audioMs);
-            i.putExtra(EXTRA_JITTER_MS, statJitterMs);
-            i.putExtra(EXTRA_LATENCY_MS, latencyMs);
-            i.putExtra(EXTRA_RX_KB, (int) ((currentSink != null ? currentSink.receivedBytes : 0) / 1024));
-            i.putExtra(EXTRA_DEC_FRAMES, currentDecoder != null ? currentDecoder.outputFrames()
-                    : (currentSink != null ? currentSink.decodedFrames : 0));
-            i.putExtra(EXTRA_TARGET_MS, targetMs);
-            i.putExtra(EXTRA_DROPPED, dropped);
-            i.putExtra(EXTRA_UNDERRUN, underruns);
-            i.putExtra(EXTRA_OUTPUT, output == null ? "" : output);
-            synchronized (logBuf) {
-                int from = Math.max(0, logBuf.size() - 30);
-                i.putStringArrayListExtra(EXTRA_LOG, new java.util.ArrayList<String>(logBuf.subList(from, logBuf.size())));
+            Intent intent = new Intent(ACTION_STATS);
+            intent.putExtra(EXTRA_CUR_TRANSPORT, this.statTransport);
+            intent.putExtra(EXTRA_CODEC, this.statCodecName);
+            intent.putExtra(EXTRA_RATE, this.statRate);
+            intent.putExtra(EXTRA_CHANNELS, this.statChannels);
+            intent.putExtra(EXTRA_BITRATE, i);
+            intent.putExtra(EXTRA_AUDIO_MS, i2);
+            intent.putExtra(EXTRA_JITTER_MS, this.statJitterMs);
+            intent.putExtra(EXTRA_LATENCY_MS, i3);
+            intent.putExtra(EXTRA_RX_KB, (int) ((this.currentSink != null ? this.currentSink.receivedBytes : 0L) / 1024));
+            intent.putExtra(EXTRA_DEC_FRAMES, (int) (this.currentSink != null ? this.currentSink.writtenFrames : 0L));
+            intent.putExtra(EXTRA_TARGET_MS, i4);
+            intent.putExtra(EXTRA_DROPPED, j);
+            intent.putExtra(EXTRA_UNDERRUN, j2);
+            intent.putExtra(EXTRA_OUTPUT, str == null ? "" : str);
+            intent.putExtra(EXTRA_SENDER_MS, this.statSenderRawMs);
+            List<String> list2 = logBuf;
+            synchronized (list2) {
+                intent.putStringArrayListExtra(EXTRA_LOG, new ArrayList<>(list2.subList(Math.max(0, list2.size() - 30), list2.size())));
             }
-            sendBroadcast(i);
-        } catch (Throwable ignored) {
+            sendBroadcast(intent);
+        } catch (Throwable unused2) {
         }
     }
 
     private void createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "音频播放",
-                    NotificationManager.IMPORTANCE_LOW);
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(ch);
+        NotificationChannel notificationChannel = new NotificationChannel(CHANNEL_ID, "音频播放", 2);
+        NotificationManager notificationManager = (NotificationManager) getSystemService(NotificationManager.class);
+        if (notificationManager != null) {
+            notificationManager.createNotificationChannel(notificationChannel);
         }
     }
 
-    private Notification buildNotification(String text) {
-        Intent i = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE);
-        Notification.Builder b = new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("WiFiAudio 接收端")
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.stat_sys_headset)
-                .setContentIntent(pi)
-                .setOngoing(true);
-        return b.build();
+    private Notification buildNotification(String str) {
+        return new Notification.Builder(this, CHANNEL_ID).setContentTitle("WiFiAudio 接收端").setContentText(str).setSmallIcon(android.R.drawable.stat_sys_headset).setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, (Class<?>) MainActivity.class), AccessibilityEventCompat.TYPE_VIEW_TARGETED_BY_SCROLL)).setOngoing(true).build();
     }
 
-    private void updateNotification(String text) {
+    private void updateNotification(String str) {
         try {
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.notify(1, buildNotification(text));
-        } catch (Throwable ignored) {
+            NotificationManager notificationManager = (NotificationManager) getSystemService(NotificationManager.class);
+            if (notificationManager != null) {
+                notificationManager.notify(1, buildNotification(str));
+            }
+        } catch (Throwable unused) {
         }
     }
 
-    @Override
-    public void onDestroy() {
+    @Override // android.app.Service
+    public void onDestroy() throws Throwable {
         addLog("======== 接收端服务停止 ========");
+        ArrayBlockingQueue<String> arrayBlockingQueue = logQueue;
+        for (int i = 0; i < 30 && arrayBlockingQueue != null && !arrayBlockingQueue.isEmpty(); i++) {
+            try {
+                Thread.sleep(10L);
+            } catch (InterruptedException unused) {
+            }
+        }
         stopPlayback();
         super.onDestroy();
     }

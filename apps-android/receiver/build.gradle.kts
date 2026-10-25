@@ -7,14 +7,14 @@ plugins {
 
 android {
     namespace = "com.wifiaudio.receiver"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.wifiaudio.receiver"
         minSdk = 26
         targetSdk = 36
-        versionCode = 418
-        versionName = "4.18"
+        versionCode = 420
+        versionName = "4.20"
     }
     buildTypes {
         release {

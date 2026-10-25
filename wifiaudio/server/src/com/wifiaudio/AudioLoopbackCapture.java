@@ -1,210 +1,213 @@
 package com.wifiaudio;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
-
+import android.media.AudioTimestamp;
 import java.lang.reflect.Method;
 
-/**
- * 音频回环捕获：基于 Android 13+ (API 33) 的 AudioPolicy + AudioMix loopback 机制，
- * 以 root 身份注册 AudioPolicy，捕获系统所有音频输出（媒体/游戏/通知/系统音效/VoIP 通话）。
- *
- * 实现参考 Genymobile scrcpy 的 AudioPlaybackCapture（已在海量设备验证），
- * 使用反射调用隐藏/系统 API，兼容 Android 13 - 16。
- */
+/* loaded from: classes.dex */
 public final class AudioLoopbackCapture {
-
-    /** 默认/兜底采样率 */
-    public static final int DEFAULT_SAMPLE_RATE = 48000;
-    public static final int CHANNELS = 2;
-    public static final int ENCODING = AudioFormat.ENCODING_PCM_16BIT;
     public static final int BYTES_PER_SAMPLE = 2;
-    /** 每次最多读 512 帧采样（每个声道）。48k 时约 10.7ms/块，96k 约 5.3ms —— 减小读取粒度降低发送端批量延迟 */
+    private static final int[] CAPTURED_USAGES = {1, 14, 0, 16, 11, 12, 13, 5, 6, 10, 4, 2, 3};
+    public static final int CHANNELS = 2;
+    public static final int DEFAULT_SAMPLE_RATE = 48000;
+    public static final int ENCODING = 2;
+    public static final int MAX_READ_BYTES = 2048;
     public static final int MAX_READ_FRAMES = 512;
-    public static final int MAX_READ_BYTES = MAX_READ_FRAMES * CHANNELS * BYTES_PER_SAMPLE;
-
-    /** 要捕获的所有音频使用场景 */
-    private static final int[] CAPTURED_USAGES = {
-            AudioAttributes.USAGE_MEDIA,                // 媒体播放
-            AudioAttributes.USAGE_GAME,                 // 游戏
-            AudioAttributes.USAGE_UNKNOWN,              // 未知（部分应用）
-            AudioAttributes.USAGE_ASSISTANT,            // 语音助手
-            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY,   // 无障碍
-            AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE, // 导航
-            AudioAttributes.USAGE_ASSISTANCE_SONIFICATION,      // 系统音效
-            AudioAttributes.USAGE_NOTIFICATION,         // 通知
-            AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
-            AudioAttributes.USAGE_NOTIFICATION_EVENT,
-            AudioAttributes.USAGE_ALARM,                // 闹钟
-            AudioAttributes.USAGE_VOICE_COMMUNICATION,  // VoIP 通话（微信语音等）
-            AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING,
-    };
-
-    private AudioRecord recorder;
+    private long framesRead;
     private boolean keepPlayingOnDevice;
-    /** 实际生效采样率（start 后读取） */
-    private int sampleRate = DEFAULT_SAMPLE_RATE;
+    private long lastLatencyProbeNanos;
+    private AudioRecord recorder;
+    private int sampleRate = 48000;
+    private volatile int captureLatencyMs = 0;
+    private int recordBufferFrames = -1;
 
-    public AudioLoopbackCapture(boolean keepPlayingOnDevice) {
-        this.keepPlayingOnDevice = keepPlayingOnDevice;
+    public AudioLoopbackCapture(boolean z) {
+        this.keepPlayingOnDevice = z;
     }
 
-    /** 当前实际采样率 */
-    public int getSampleRate() { return sampleRate; }
+    public int getSampleRate() {
+        return this.sampleRate;
+    }
 
-    /**
-     * 自动检测当前输出设备支持的采样率（48k 系列最高档）。
-     * 仅对"支持 Hi-Res 输出"的设备返回 >48k；普通设备返回 48000。
-     */
-    public static int detectDeviceSampleRate(Context context) {
+    public int getCaptureLatencyMs() {
+        return this.captureLatencyMs;
+    }
+
+    public int getRecordBufferFrames() {
+        return this.recordBufferFrames;
+    }
+
+    public static int captureLatencyMs(long j, long j2, long j3, long j4, int i) {
+        if (i <= 0) {
+            return -1;
+        }
+        long j5 = (j - (j2 + (((j3 - j4) * 1000000000) / i))) / 1000000;
+        if (j5 < 0 || j5 > 5000) {
+            return -1;
+        }
+        return (int) j5;
+    }
+
+    private void probeCaptureLatency() {
+        int iCaptureLatencyMs;
+        long jNanoTime = System.nanoTime();
+        if (jNanoTime - this.lastLatencyProbeNanos < 500000000) {
+            return;
+        }
+        this.lastLatencyProbeNanos = jNanoTime;
         try {
-            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-            if (am == null) return DEFAULT_SAMPLE_RATE;
-            int best = DEFAULT_SAMPLE_RATE;
-            for (android.media.AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-                if (d == null || !d.isSink()) continue;
-                for (int r : d.getSampleRates()) {
-                    // 只取 48k 系列（避免 44.1k 系列带来的怪异切换），且 ≤192kHz
-                    if ((r == 48000 || r == 96000 || r == 192000) && r > best) {
-                        best = r;
-                    }
-                }
+            AudioTimestamp audioTimestamp = new AudioTimestamp();
+            this.recorder.getTimestamp(audioTimestamp, 0);
+            if (audioTimestamp.nanoTime <= 0 || audioTimestamp.framePosition < 0 || (iCaptureLatencyMs = captureLatencyMs(System.nanoTime(), audioTimestamp.nanoTime, this.framesRead, audioTimestamp.framePosition, this.sampleRate)) < 0) {
+                return;
             }
-            return best;
-        } catch (Throwable t) {
-            return DEFAULT_SAMPLE_RATE;
+            this.captureLatencyMs = iCaptureLatencyMs;
+        } catch (Throwable unused) {
         }
     }
 
-    /** 创建并启动回环捕获。失败抛出带原因的 RuntimeException。 */
-    @SuppressLint({"PrivateApi", "SoonBlockedPrivateApi"})
+    public static int detectDeviceSampleRate(Context context) {
+        try {
+            AudioManager audioManager = (AudioManager) context.getSystemService("audio");
+            if (audioManager == null) {
+                return 48000;
+            }
+            int i = 48000;
+            for (AudioDeviceInfo audioDeviceInfo : audioManager.getDevices(2)) {
+                if (audioDeviceInfo != null && audioDeviceInfo.isSink()) {
+                    for (int i2 : audioDeviceInfo.getSampleRates()) {
+                        if ((i2 == 48000 || i2 == 96000 || i2 == 192000) && i2 > i) {
+                            i = i2;
+                        }
+                    }
+                }
+            }
+            return i;
+        } catch (Throwable unused) {
+            return 48000;
+        }
+    }
+
     public void start(Context context) throws Exception {
         start(context, 0);
     }
 
-    /**
-     * 创建并启动回环捕获。
-     * @param targetRate 目标采样率；0=自动检测设备能力；48000/96000/192000=固定值
-     */
-    @SuppressLint({"PrivateApi", "SoonBlockedPrivateApi"})
-    public void start(Context context, int targetRate) throws Exception {
-        if (targetRate <= 0) {
-            targetRate = detectDeviceSampleRate(context);
+    /* JADX WARN: Removed duplicated region for block: B:30:0x017d  */
+    /* JADX WARN: Removed duplicated region for block: B:41:0x01f2  */
+    /*
+        Code decompiled incorrectly, please refer to instructions dump.
+    */
+    public void start(Context context, int i) throws Exception {
+        Class<?>[] clsArr;
+        int i2;
+        int iIntValue;
+        int iDetectDeviceSampleRate = i <= 0 ? detectDeviceSampleRate(context) : i;
+        if (iDetectDeviceSampleRate != 48000 && iDetectDeviceSampleRate != 96000 && iDetectDeviceSampleRate != 192000) {
+            iDetectDeviceSampleRate = 48000;
         }
-        if (targetRate != 48000 && targetRate != 96000 && targetRate != 192000) {
-            targetRate = DEFAULT_SAMPLE_RATE;
+        Class<?> cls = Class.forName("android.media.audiopolicy.AudioMixingRule");
+        Class<?> cls2 = Class.forName("android.media.audiopolicy.AudioMixingRule$Builder");
+        Class<?> cls3 = Class.forName("android.media.audiopolicy.AudioMix");
+        Class<?> cls4 = Class.forName("android.media.audiopolicy.AudioMix$Builder");
+        Class<?> cls5 = Class.forName("android.media.audiopolicy.AudioPolicy");
+        Class<?> cls6 = Class.forName("android.media.audiopolicy.AudioPolicy$Builder");
+        Object objNewInstance = cls2.getConstructor(null).newInstance(null);
+        cls2.getMethod("setTargetMixRole", Integer.TYPE).invoke(objNewInstance, Integer.valueOf(cls.getField("MIX_ROLE_PLAYERS").getInt(null)));
+        int i3 = cls.getField("RULE_MATCH_ATTRIBUTE_USAGE").getInt(null);
+        Method method = cls2.getMethod("addMixRule", Integer.TYPE, Object.class);
+        for (int i4 : CAPTURED_USAGES) {
+            method.invoke(objNewInstance, Integer.valueOf(i3), new AudioAttributes.Builder().setUsage(i4).build());
         }
-        final int requestedRate = targetRate;
-
-        Class<?> audioMixingRuleClass = Class.forName("android.media.audiopolicy.AudioMixingRule");
-        Class<?> audioMixingRuleBuilderClass = Class.forName("android.media.audiopolicy.AudioMixingRule$Builder");
-        Class<?> audioMixClass = Class.forName("android.media.audiopolicy.AudioMix");
-        Class<?> audioMixBuilderClass = Class.forName("android.media.audiopolicy.AudioMix$Builder");
-        Class<?> audioPolicyClass = Class.forName("android.media.audiopolicy.AudioPolicy");
-        Class<?> audioPolicyBuilderClass = Class.forName("android.media.audiopolicy.AudioPolicy$Builder");
-
-        // AudioMixingRule.Builder builder = new AudioMixingRule.Builder();
-        Object builder = audioMixingRuleBuilderClass.getConstructor().newInstance();
-
-        // builder.setTargetMixRole(AudioMixingRule.MIX_ROLE_PLAYERS);
-        int mixRolePlayers = audioMixingRuleClass.getField("MIX_ROLE_PLAYERS").getInt(null);
-        Method setTargetMixRole = audioMixingRuleBuilderClass.getMethod("setTargetMixRole", int.class);
-        setTargetMixRole.invoke(builder, mixRolePlayers);
-
-        // 匹配所有目标 usage（同一 builder 内多条规则为 OR 关系）
-        int ruleMatchAttrUsage = audioMixingRuleClass.getField("RULE_MATCH_ATTRIBUTE_USAGE").getInt(null);
-        Method addMixRule = audioMixingRuleBuilderClass.getMethod("addMixRule", int.class, Object.class);
-        for (int usage : CAPTURED_USAGES) {
-            AudioAttributes attrs = new AudioAttributes.Builder().setUsage(usage).build();
-            addMixRule.invoke(builder, ruleMatchAttrUsage, attrs);
-        }
-
-        // builder.voiceCommunicationCaptureAllowed(true); —— 允许捕获 VoIP 通话
         try {
-            Method vcc = audioMixingRuleBuilderClass.getMethod("voiceCommunicationCaptureAllowed", boolean.class);
-            vcc.invoke(builder, true);
-        } catch (NoSuchMethodException ignored) {
-            // 低版本没有此方法
+            cls2.getMethod("voiceCommunicationCaptureAllowed", Boolean.TYPE).invoke(objNewInstance, true);
+        } catch (NoSuchMethodException unused) {
         }
-
-        // AudioMixingRule rule = builder.build();
-        Object rule = audioMixingRuleBuilderClass.getMethod("build").invoke(builder);
-
-        // AudioMix.Builder mixBuilder = new AudioMix.Builder(rule);
-        Object mixBuilder = audioMixBuilderClass.getConstructor(audioMixingRuleClass).newInstance(rule);
-
-        // mixBuilder.setFormat(format)
-        AudioFormat format = createAudioFormat(requestedRate);
-        Method setFormat = mixBuilder.getClass().getMethod("setFormat", AudioFormat.class);
-        setFormat.invoke(mixBuilder, format);
-
-        // mixBuilder.setRouteFlags(ROUTE_FLAG_LOOP_BACK[_RENDER])
-        String routeFlagName = keepPlayingOnDevice ? "ROUTE_FLAG_LOOP_BACK_RENDER" : "ROUTE_FLAG_LOOP_BACK";
-        int routeFlags;
+        Object objNewInstance2 = cls4.getConstructor(cls).newInstance(cls2.getMethod("build", null).invoke(objNewInstance, null));
+        objNewInstance2.getClass().getMethod("setFormat", AudioFormat.class).invoke(objNewInstance2, createAudioFormat(iDetectDeviceSampleRate));
         try {
-            routeFlags = audioMixClass.getField(routeFlagName).getInt(null);
-        } catch (NoSuchFieldException e) {
-            routeFlags = audioMixClass.getField("ROUTE_FLAG_LOOP_BACK").getInt(null);
+            clsArr = null;
+            try {
+                i2 = cls3.getField(this.keepPlayingOnDevice ? "ROUTE_FLAG_LOOP_BACK_RENDER" : "ROUTE_FLAG_LOOP_BACK").getInt(null);
+            } catch (NoSuchFieldException unused2) {
+                i2 = cls3.getField("ROUTE_FLAG_LOOP_BACK").getInt(clsArr);
+                objNewInstance2.getClass().getMethod("setRouteFlags", Integer.TYPE).invoke(objNewInstance2, Integer.valueOf(i2));
+                Object objInvoke = cls4.getMethod("build", clsArr).invoke(objNewInstance2, clsArr);
+                Object objNewInstance3 = cls6.getConstructor(Context.class).newInstance(context);
+                cls6.getMethod("addMix", cls3).invoke(objNewInstance3, objInvoke);
+                Object objInvoke2 = cls6.getMethod("build", clsArr).invoke(objNewInstance3, clsArr);
+                Method declaredMethod = AudioManager.class.getDeclaredMethod("registerAudioPolicyStatic", cls5);
+                declaredMethod.setAccessible(true);
+                iIntValue = ((Integer) declaredMethod.invoke(clsArr, objInvoke2)).intValue();
+                if (iIntValue == 0) {
+                }
+            }
+        } catch (NoSuchFieldException unused3) {
+            clsArr = null;
         }
-        Method setRouteFlags = mixBuilder.getClass().getMethod("setRouteFlags", int.class);
-        setRouteFlags.invoke(mixBuilder, routeFlags);
-
-        // AudioMix mix = mixBuilder.build();
-        Object mix = audioMixBuilderClass.getMethod("build").invoke(mixBuilder);
-
-        // AudioPolicy.Builder policyBuilder = new AudioPolicy.Builder(context);
-        Object policyBuilder = audioPolicyBuilderClass.getConstructor(Context.class).newInstance(context);
-        Method addMix = audioPolicyBuilderClass.getMethod("addMix", audioMixClass);
-        addMix.invoke(policyBuilder, mix);
-        Object policy = audioPolicyBuilderClass.getMethod("build").invoke(policyBuilder);
-
-        // AudioManager.registerAudioPolicyStatic(policy)
-        Method register = AudioManager.class.getDeclaredMethod("registerAudioPolicyStatic", audioPolicyClass);
-        register.setAccessible(true);
-        int result = (int) register.invoke(null, policy);
-        if (result != 0) {
-            throw new RuntimeException("registerAudioPolicyStatic returned " + result);
+        objNewInstance2.getClass().getMethod("setRouteFlags", Integer.TYPE).invoke(objNewInstance2, Integer.valueOf(i2));
+        Object objInvoke3 = cls4.getMethod("build", clsArr).invoke(objNewInstance2, clsArr);
+        Object objNewInstance32 = cls6.getConstructor(Context.class).newInstance(context);
+        cls6.getMethod("addMix", cls3).invoke(objNewInstance32, objInvoke3);
+        Object objInvoke22 = cls6.getMethod("build", clsArr).invoke(objNewInstance32, clsArr);
+        Method declaredMethod2 = AudioManager.class.getDeclaredMethod("registerAudioPolicyStatic", cls5);
+        declaredMethod2.setAccessible(true);
+        iIntValue = ((Integer) declaredMethod2.invoke(clsArr, objInvoke22)).intValue();
+        if (iIntValue == 0) {
+            throw new RuntimeException("registerAudioPolicyStatic returned " + iIntValue);
         }
-
-        // policy.createAudioRecordSink(mix) → AudioRecord
-        Method createSink = audioPolicyClass.getMethod("createAudioRecordSink", audioMixClass);
-        recorder = (AudioRecord) createSink.invoke(policy, mix);
-
-        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+        AudioRecord audioRecord = (AudioRecord) cls5.getMethod("createAudioRecordSink", cls3).invoke(objInvoke22, objInvoke3);
+        this.recorder = audioRecord;
+        if (audioRecord.getState() != 1) {
             throw new RuntimeException("AudioRecord sink not initialized");
         }
-        recorder.startRecording();
-        // 读取实际生效采样率（系统可能未按请求值处理）
-        sampleRate = recorder.getSampleRate();
-        if (sampleRate <= 0) sampleRate = requestedRate;
+        this.recorder.startRecording();
+        int sampleRate = this.recorder.getSampleRate();
+        this.sampleRate = sampleRate;
+        if (sampleRate <= 0) {
+            this.sampleRate = iDetectDeviceSampleRate;
+        }
+        try {
+            this.recordBufferFrames = this.recorder.getBufferSizeInFrames();
+            Util.log("Capture", "AudioRecord 缓冲 " + this.recordBufferFrames + " 帧（约 " + ((this.recordBufferFrames * 1000) / Math.max(1, this.sampleRate)) + "ms，框架决定，代码无法设置）");
+        } catch (Throwable unused4) {
+            this.recordBufferFrames = -1;
+        }
     }
 
-    private static AudioFormat createAudioFormat(int sampleRate) {
-        AudioFormat.Builder b = new AudioFormat.Builder();
-        b.setEncoding(ENCODING);
-        b.setSampleRate(sampleRate);
-        b.setChannelMask(AudioFormat.CHANNEL_IN_STEREO);
-        return b.build();
+    private static AudioFormat createAudioFormat(int i) throws IllegalArgumentException {
+        AudioFormat.Builder builder = new AudioFormat.Builder();
+        builder.setEncoding(2);
+        builder.setSampleRate(i);
+        builder.setChannelMask(12);
+        return builder.build();
     }
 
-    /** 读取一帧 PCM 数据到 buf，返回实际读取字节数；-1 表示停止 */
-    public int read(byte[] buf) {
-        if (recorder == null) return -1;
-        int n = recorder.read(buf, 0, MAX_READ_BYTES);
-        return n;
+    public int read(byte[] bArr) {
+        AudioRecord audioRecord = this.recorder;
+        if (audioRecord == null) {
+            return -1;
+        }
+        int i = audioRecord.read(bArr, 0, MAX_READ_BYTES);
+        if (i > 0) {
+            this.framesRead += i / 4;
+            probeCaptureLatency();
+        }
+        return i;
     }
 
     public void stop() {
-        if (recorder != null) {
+        AudioRecord audioRecord = this.recorder;
+        if (audioRecord != null) {
             try {
-                recorder.release();
-            } catch (Throwable ignored) {
+                audioRecord.release();
+            } catch (Throwable unused) {
             }
-            recorder = null;
+            this.recorder = null;
         }
     }
 }

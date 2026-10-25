@@ -4,6 +4,9 @@
 
 **✅ 同时支持 KernelSU 与 Magisk**（同一份安装包，安装时自动适配平台）
 
+> **📌 关于 v4.20 源码**：本仓库源码由 v4.20 构建产物（模块 v3.9 刷机包 + 接收端/管理器 4.20 APK）**逆向恢复**而来，原始源码已丢失。完整的 4.18 → 4.20 变更说明见 [CHANGES_4.18_to_4.20.md](CHANGES_4.18_to_4.20.md)。
+> 注意：Compose UI（`MainActivity.kt`）反编译后为 Java 形态（`MainActivityKt.java`），逻辑完整但不是 Kotlin/Compose 源文件；4.20 起**编码链路下线，仅传输未压缩 PCM**。
+
 ## ✨ 功能特性
 
 | 特性 | 说明 |
@@ -105,6 +108,7 @@ gradle :receiver:assembleRelease :manager:assembleRelease
 
 | 版本 | 里程碑 |
 |---|---|
+| v4.20 | **编码链路下线，仅保留 PCM**（发送端删 OPUS/AAC 编码器、接收端删 5 个解码类、配置移除 codec/码率）；接收端新增诊断面板、延迟分解、连接预设、AAudio 容错回退、内置测试音；管理器新增服务日志、重启服务、发送队列/分发丢帧统计；发送端新增 `auto_off_min` 定时关闭；模块改为标准刷机包结构（v3.9）。源码由构建产物逆向恢复 |
 | v4.18 | 修复 HTTP 流缺响应头（PC/VLC 打不开 `/stream`）；Mixer 线程解耦（编码/UDP 不再阻塞捕获）；编码不匹配返回 409 |
 | v4.x | Kotlin + Compose + miuix 重构；自适应缓冲（欠载驱动）；AAudio exclusive；高采样率 PCM；URL/端口转发支持 |
 | v3.x | AAC 双模式、fdk-aac 软解、libopus 软解、配置迁移 |

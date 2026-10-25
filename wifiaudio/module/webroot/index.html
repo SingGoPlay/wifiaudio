@@ -140,33 +140,14 @@ a{color:var(--accent)}
     </select>
   </div>
   <div class="row">
-    <div><div class="label">编码方式</div>
-    <div class="desc">PCM 无损低延迟 / OPUS 高压缩比音质好 / AAC 兼容性最好（PC 播放选 AAC 或 PCM）</div></div>
-    <select id="selCodec" onchange="markDirty()">
-      <option value="pcm">PCM 原始</option>
-      <option value="opus">OPUS 压缩</option>
-      <option value="aac">AAC 压缩</option>
-    </select>
-  </div>
-  <div class="row">
     <div><div class="label">PCM 采样率</div>
-    <div class="desc">自动=跟随设备输出能力（Hi-Res 直通，最高 192kHz）；高采样率仅 PCM 模式生效</div></div>
+    <div class="desc">自动=跟随设备输出能力（Hi-Res 直通，最高 192kHz）；本版本只传未压缩 PCM</div></div>
     <select id="selPcmRate" onchange="markDirty()">
       <option value="auto">自动（跟随设备）</option>
       <option value="48000">48 kHz</option>
       <option value="96000">96 kHz</option>
       <option value="192000">192 kHz</option>
     </select>
-  </div>
-  <div class="row">
-    <div><div class="label">OPUS 码率 (kbps)</div>
-    <div class="desc">128≈CD音质感知，64 已不错，32 极省带宽</div></div>
-    <input type="number" id="inOpusBitrate" min="16" max="512" step="16" value="128" onchange="markDirty()">
-  </div>
-  <div class="row">
-    <div><div class="label">AAC 码率 (kbps)</div>
-    <div class="desc">仅 AAC 模式生效</div></div>
-    <input type="number" id="inBitrate" min="32" max="320" step="32" value="192" onchange="markDirty()">
   </div>
   <div class="row">
     <div><div class="label">蜂窝通话捕获</div>
@@ -314,7 +295,7 @@ function init() {
 
 // ================= 预设管理 =================
 
-var PRESET_KEYS = ["mode","transport","codec","pcm_rate","opus_bitrate","aac_bitrate","local_render","capture_call"];
+var PRESET_KEYS = ["mode","transport","pcm_rate","local_render","capture_call"];
 
 function loadPresets() {
   exec("mkdir -p '" + MODDIR + "/presets_user/'");
@@ -391,9 +372,6 @@ function applyPresetFile(path) {
   if (Object.keys(p).length === 0) { toast("预设读取失败"); return; }
   if (p.mode) updateModeUI(p.mode === "game" ? "game" : "music", false);
   if (p.transport) document.getElementById("selTransport").value = p.transport;
-  if (p.codec) document.getElementById("selCodec").value = p.codec;
-  if (p.opus_bitrate) document.getElementById("inOpusBitrate").value = p.opus_bitrate;
-  if (p.aac_bitrate) document.getElementById("inBitrate").value = p.aac_bitrate;
   if (p.pcm_rate) document.getElementById("selPcmRate").value = p.pcm_rate;
   if (p.local_render) document.getElementById("selRender").value = p.local_render === "1" ? "1" : "0";
   if (p.capture_call) document.getElementById("selCall").value = p.capture_call === "1" ? "1" : "0";
@@ -419,10 +397,7 @@ function savePreset() {
   var lines = ["# 自定义预设", "name=" + name, "desc=自定义预设",
     "mode=" + (document.getElementById("modeGame").classList.contains("active") ? "game" : "music"),
     "transport=" + document.getElementById("selTransport").value,
-    "codec=" + document.getElementById("selCodec").value,
     "pcm_rate=" + document.getElementById("selPcmRate").value,
-    "opus_bitrate=" + document.getElementById("inOpusBitrate").value,
-    "aac_bitrate=" + document.getElementById("inBitrate").value,
     "local_render=" + document.getElementById("selRender").value,
     "capture_call=" + document.getElementById("selCall").value
   ];
@@ -515,10 +490,7 @@ function loadConfig() {
   }
   document.getElementById("swEnabled").classList.toggle("on", String(m.enabled) === "1");
   document.getElementById("selRender").value = String(m.local_render) === "1" ? "1" : "0";
-  document.getElementById("selCodec").value = m.codec || "pcm";
   document.getElementById("selPcmRate").value = m.pcm_rate || "auto";
-  document.getElementById("inBitrate").value = String(m.aac_bitrate || "192");
-  document.getElementById("inOpusBitrate").value = String(m.opus_bitrate || "128");
   document.getElementById("selCall").value = String(m.capture_call) === "1" ? "1" : "0";
   document.getElementById("inTcpPort").value = String(m.tcp_port || "47800");
   document.getElementById("inHttpPort").value = String(m.http_port || "47801");
@@ -526,7 +498,7 @@ function loadConfig() {
   updateModeUI((m.mode === "game") ? "game" : "music", false);
   dirty = false;
   configRetried = false;
-  wlog("loadConfig 成功: enabled=" + m.enabled + " codec=" + m.codec + " mode=" + m.mode);
+  wlog("loadConfig 成功: enabled=" + m.enabled + " mode=" + m.mode);
   return true;
 }
 
@@ -660,10 +632,7 @@ function saveConfig() {
     transport: document.getElementById("selTransport").value,
     tcp_port: parseInt(document.getElementById("inTcpPort").value) || 47800,
     http_port: parseInt(document.getElementById("inHttpPort").value) || 47801,
-    codec: document.getElementById("selCodec").value,
     pcm_rate: document.getElementById("selPcmRate").value,
-    aac_bitrate: parseInt(document.getElementById("inBitrate").value) || 192,
-    opus_bitrate: parseInt(document.getElementById("inOpusBitrate").value) || 128,
     capture_call: parseInt(document.getElementById("selCall").value) || 0
   }); // 单行 JSON：ksuwebui 的 exec 对多行输出可能截断，单行最可靠
   var b64 = toB64(content);

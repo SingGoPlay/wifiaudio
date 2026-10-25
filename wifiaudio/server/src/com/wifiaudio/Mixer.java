@@ -1,59 +1,28 @@
 package com.wifiaudio;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 音频混合与分发：
- *  - 主输入：系统回环捕获 (48kHz stereo PCM16)
- *  - 副输入：蜂窝通话 VOICE_CALL (任意采样率 mono/stereo，线性重采样到 48k stereo)
- *  - 输出：48kHz stereo PCM16，分发给所有接收端（TCP / UDP / HTTP / 编码器）
- *
- * <pre>
- * v4.18 线程解耦（重要）：
- *   捕获线程（AudioRecord.read 循环）只做「拷贝一帧 → 入队」，随即返回；
- *   独立的 mixer-dispatch 线程依次调用各 Sink.onPcm()。
- *   原因：Sink 内部存在真实阻塞点 ——
- *     · MediaCodec.dequeueInputBuffer(20000)：OPUS/AAC 编码每帧最长阻塞 20ms
- *     · DatagramSocket.send()：发送缓冲满（WiFi 拥塞）时阻塞
- *   这些调用原先直接跑在捕获线程上，一旦阻塞就会让 AudioRecord 内部缓冲溢出，
- *   表现为爆音/断续/丢帧。解耦后 Sink 再慢也只会丢「分发队列」里的帧，不砸捕获。
- *
- *   顺带修掉一个竞态：通话帧（CallCapture 线程）与回环帧原先并发调用 Sink，
- *   现在统一走同一个分发线程，Sink 侧不再被并发重入。
- *
- * 队列语义（实时优先）：深度上限 QUEUE_FRAMES 帧，满则丢弃最旧一帧并计数，
- *   **绝不阻塞生产者**；帧缓冲用池复用，避免每帧 new byte[]。
- * </pre>
- */
+/* loaded from: classes.dex */
 public final class Mixer {
-
-    public static final int OUT_RATE = 48000;
+    private static final int MAX_FRAME_BYTES = 2048;
     public static final int OUT_CHANNELS = 2;
-
-    /** 分发队列深度（帧）。48k/512 帧≈10.7ms/帧 → 满队列约 214ms 冗余 */
-    private static final int QUEUE_FRAMES = 20;
-    /** 帧缓冲池容量（须 ≥ 队列深度，避免消费者稍慢就无缓冲可用） */
+    public static final int OUT_RATE = 48000;
     private static final int POOL_SIZE = 24;
-    /** 单帧字节数上限：512 帧 × 2ch × 2B = 2048 */
-    private static final int MAX_FRAME_BYTES = 512 * OUT_CHANNELS * 2;
-
-    private final List<Sink> sinks = new CopyOnWriteArrayList<Sink>();
-
-    private final ArrayBlockingQueue<Frame> queue = new ArrayBlockingQueue<Frame>(QUEUE_FRAMES);
-    private final ArrayBlockingQueue<byte[]> pool = new ArrayBlockingQueue<byte[]>(POOL_SIZE);
-    private volatile boolean running = true;
+    private static final int QUEUE_FRAMES = 8;
     private final Thread dispatchThread;
-
+    private final List<Sink> sinks = new CopyOnWriteArrayList();
+    private final ArrayBlockingQueue<Frame> queue = new ArrayBlockingQueue<>(QUEUE_FRAMES);
+    private final ArrayBlockingQueue<byte[]> pool = new ArrayBlockingQueue<>(POOL_SIZE);
+    private volatile boolean running = true;
     private long drops = 0;
     private long lastDropLogAt = 0;
     private long lastSlowLogAt = 0;
 
     public interface Sink {
-        /** 收到一帧 48k stereo PCM16 数据（字节数 = frames*4）。
-         *  实现必须在本方法内完成数据拷贝，不得保留 pcm 引用（缓冲会被回收复用）。 */
-        void onPcm(byte[] pcm, int frames);
+        void onPcm(byte[] bArr, int i);
     }
 
     private static final class Frame {
@@ -61,191 +30,194 @@ public final class Mixer {
         final int bytes;
         final int frames;
 
-        Frame(byte[] buf, int bytes, int frames) {
-            this.buf = buf;
-            this.bytes = bytes;
-            this.frames = frames;
+        Frame(byte[] bArr, int i, int i2) {
+            this.buf = bArr;
+            this.bytes = i;
+            this.frames = i2;
         }
     }
 
     public Mixer() {
-        // 预填充帧缓冲池（不预填充 = 第一帧起就无缓冲可用，全部被丢弃）
         for (int i = 0; i < POOL_SIZE; i++) {
-            pool.offer(new byte[MAX_FRAME_BYTES]);
+            this.pool.offer(new byte[2048]);
         }
-        dispatchThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                dispatchLoop();
+        Thread thread = new Thread(new Runnable() { // from class: com.wifiaudio.Mixer.1
+            @Override // java.lang.Runnable
+            public void run() throws InterruptedException {
+                Mixer.this.dispatchLoop();
             }
         }, "mixer-dispatch");
-        dispatchThread.setDaemon(true);
-        dispatchThread.start();
-        Util.log("Mixer", "dispatch thread started (queue=" + QUEUE_FRAMES
-                + " frames, pool=" + POOL_SIZE + "x" + MAX_FRAME_BYTES + "B)");
+        this.dispatchThread = thread;
+        thread.setDaemon(true);
+        thread.start();
+        Util.log("Mixer", "dispatch thread started (queue=8 frames, pool=24x2048B)");
     }
 
-    public void addSink(Sink s) {
-        sinks.add(s);
+    public void addSink(Sink sink) {
+        this.sinks.add(sink);
     }
 
-    public void removeSink(Sink s) {
-        sinks.remove(s);
+    public void removeSink(Sink sink) {
+        this.sinks.remove(sink);
     }
 
-    /** 回环 PCM（捕获线程调用：只拷贝入队，立即返回，绝不阻塞） */
-    public void mixLoopback(byte[] pcm, int bytes) {
-        int frames = bytes / (OUT_CHANNELS * 2);
-        if (frames <= 0) return;
-        enqueueCopy(pcm, bytes, frames);
-    }
-
-    /**
-     * 通话 PCM 混入。源采样率/声道任意，线性重采样到 48k stereo 后入队。
-     * 由于通话与媒体极少同时发生（通话时媒体通常暂停），此处策略：通话期间通话帧直接作为一帧输出，
-     * 媒体恢复时自然切换，避免复杂混音。
-     */
-    public void mixCallPcm(byte[] pcm, int frames, int channels, int sampleRate) {
-        if (frames <= 0) return;
-        if (sampleRate == OUT_RATE && channels == OUT_CHANNELS) {
-            enqueueCopy(pcm, frames * OUT_CHANNELS * 2, frames);
+    public void mixLoopback(byte[] bArr, int i) {
+        int i2 = i / 4;
+        if (i2 <= 0) {
             return;
         }
-        int outFrames = (int) Math.ceil((long) frames * OUT_RATE / sampleRate);
-        int outBytes = outFrames * OUT_CHANNELS * 2;
-        // 重采样结果是自己新建的缓冲 → 可「拥有」入队，免去二次拷贝
-        byte[] out = (outBytes <= MAX_FRAME_BYTES) ? pool.poll() : null;
-        if (out == null) out = new byte[outBytes];
-        if (channels == 1) {
-            resampleMonoToStereo(pcm, frames, sampleRate, out, outFrames);
+        enqueueCopy(bArr, i, i2);
+    }
+
+    public void mixCallPcm(byte[] bArr, int i, int i2, int i3) {
+        if (i <= 0) {
+            return;
+        }
+        if (i3 == 48000 && i2 == 2) {
+            enqueueCopy(bArr, i * 4, i);
+            return;
+        }
+        int iCeil = (int) Math.ceil((i * 48000) / i3);
+        int i4 = iCeil * 4;
+        byte[] bArrPoll = i4 <= 2048 ? this.pool.poll() : null;
+        if (bArrPoll == null) {
+            bArrPoll = new byte[i4];
+        }
+        if (i2 == 1) {
+            resampleMonoToStereo(bArr, i, i3, bArrPoll, iCeil);
         } else {
-            resampleStereo(pcm, frames, sampleRate, out, outFrames);
+            resampleStereo(bArr, i, i3, bArrPoll, iCeil);
         }
-        enqueueOwned(new Frame(out, outBytes, outFrames));
+        enqueueOwned(new Frame(bArrPoll, i4, iCeil));
     }
 
-    /** 拷贝入队（源缓冲由调用方复用，必须先拷贝） */
-    private void enqueueCopy(byte[] src, int bytes, int frames) {
-        byte[] buf = pool.poll();
-        if (buf == null || buf.length < bytes) {
-            // 缓冲池耗尽（消费者严重落后）：宁可丢帧也不在捕获线程里分配/阻塞
-            if (buf != null) pool.offer(buf);
+    private void enqueueCopy(byte[] bArr, int i, int i2) {
+        byte[] bArrPoll = this.pool.poll();
+        if (bArrPoll == null || bArrPoll.length < i) {
+            if (bArrPoll != null) {
+                this.pool.offer(bArrPoll);
+            }
             countDrop();
-            return;
+        } else {
+            System.arraycopy(bArr, 0, bArrPoll, 0, i);
+            enqueueOwned(new Frame(bArrPoll, i, i2));
         }
-        System.arraycopy(src, 0, buf, 0, bytes);
-        enqueueOwned(new Frame(buf, bytes, frames));
     }
 
-    /** 入队（缓冲所有权转移给队列）。满则丢最旧帧，保持实时性。 */
-    private void enqueueOwned(Frame f) {
-        if (queue.offer(f)) {
-            Status.mixerQueueFrames = queue.size();
+    private void enqueueOwned(Frame frame) {
+        if (this.queue.offer(frame)) {
+            Status.mixerQueueFrames = this.queue.size();
             return;
         }
-        Frame old = queue.poll();
-        if (old != null) pool.offer(old.buf);
-        if (!queue.offer(f)) {
-            pool.offer(f.buf);
+        Frame framePoll = this.queue.poll();
+        if (framePoll != null) {
+            this.pool.offer(framePoll.buf);
+        }
+        if (!this.queue.offer(frame)) {
+            this.pool.offer(frame.buf);
             countDrop();
-            return;
+        } else {
+            Status.mixerQueueFrames = this.queue.size();
+            countDrop();
         }
-        Status.mixerQueueFrames = queue.size();
-        countDrop();
     }
 
     private void countDrop() {
-        drops++;
-        Status.mixerDrops = drops;
-        long now = System.currentTimeMillis();
-        if (now - lastDropLogAt > 2000) {
-            lastDropLogAt = now;
-            Util.log("Mixer", "分发队列溢出：累计丢弃 " + drops + " 帧（有 Sink 阻塞或消费过慢）");
+        long j = this.drops + 1;
+        this.drops = j;
+        Status.mixerDrops = j;
+        long jCurrentTimeMillis = System.currentTimeMillis();
+        if (jCurrentTimeMillis - this.lastDropLogAt > 2000) {
+            this.lastDropLogAt = jCurrentTimeMillis;
+            Util.log("Mixer", "分发队列溢出：累计丢弃 " + this.drops + " 帧（有 Sink 阻塞或消费过慢）");
         }
     }
 
-    /** 分发线程：串行调用所有 Sink，Sink 再慢也只影响本线程 */
-    private void dispatchLoop() {
-        while (running) {
-            Frame f;
+    /* JADX INFO: Access modifiers changed from: private */
+    public void dispatchLoop() throws InterruptedException {
+        while (this.running) {
             try {
-                f = queue.take();
-            } catch (InterruptedException e) {
-                break;
-            }
-            long t0 = System.nanoTime();
-            for (Sink s : sinks) {
-                try {
-                    s.onPcm(f.buf, f.frames);
-                } catch (Throwable ignored) {
+                Frame frameTake = this.queue.take();
+                long jNanoTime = System.nanoTime();
+                Iterator<Sink> it = this.sinks.iterator();
+                while (it.hasNext()) {
+                    try {
+                        it.next().onPcm(frameTake.buf, frameTake.frames);
+                    } catch (Throwable unused) {
+                    }
                 }
-            }
-            long us = (System.nanoTime() - t0) / 1000;
-            Status.mixerDispatchUs = us;
-            // 单帧分发耗时超过一帧时长（48k/512≈10.7ms）说明有 Sink 在阻塞，限流告警
-            if (us > 10700) {
-                long now = System.currentTimeMillis();
-                if (now - lastSlowLogAt > 5000) {
-                    lastSlowLogAt = now;
-                    Util.log("Mixer", "分发偏慢: " + (us / 1000) + "ms/帧（Sink 阻塞？队列深度="
-                            + queue.size() + "）");
+                long jNanoTime2 = (System.nanoTime() - jNanoTime) / 1000;
+                Status.mixerDispatchUs = jNanoTime2;
+                if (jNanoTime2 > 10700) {
+                    long jCurrentTimeMillis = System.currentTimeMillis();
+                    if (jCurrentTimeMillis - this.lastSlowLogAt > 5000) {
+                        this.lastSlowLogAt = jCurrentTimeMillis;
+                        Util.log("Mixer", "分发偏慢: " + (jNanoTime2 / 1000) + "ms/帧（Sink 阻塞？队列深度=" + this.queue.size() + "）");
+                    }
                 }
+                this.pool.offer(frameTake.buf);
+                Status.mixerQueueFrames = this.queue.size();
+            } catch (InterruptedException unused2) {
             }
-            pool.offer(f.buf);
-            Status.mixerQueueFrames = queue.size();
         }
         Util.log("Mixer", "dispatch thread exited");
     }
 
     public void stop() {
-        running = false;
-        if (dispatchThread != null) dispatchThread.interrupt();
-        queue.clear();
-        sinks.clear();
-        Util.log("Mixer", "stopped, total dropped frames=" + drops);
+        this.running = false;
+        Thread thread = this.dispatchThread;
+        if (thread != null) {
+            thread.interrupt();
+        }
+        this.queue.clear();
+        this.sinks.clear();
+        Util.log("Mixer", "stopped, total dropped frames=" + this.drops);
     }
 
-    /** mono -> stereo 线性重采样 */
-    private static void resampleMonoToStereo(byte[] in, int inFrames, int inRate, byte[] out, int outFrames) {
-        short[] tmp = new short[inFrames];
-        for (int i = 0; i < inFrames; i++) {
-            tmp[i] = (short) ((in[i * 2] & 0xFF) | (in[i * 2 + 1] << 8));
+    private static void resampleMonoToStereo(byte[] bArr, int i, int i2, byte[] bArr2, int i3) {
+        short[] sArr = new short[i];
+        for (int i4 = 0; i4 < i; i4++) {
+            int i5 = i4 * 2;
+            sArr[i4] = (short) ((bArr[i5 + 1] << 8) | (bArr[i5] & 255));
         }
-        int outIdx = 0;
-        for (int o = 0; o < outFrames; o++) {
-            double pos = (double) o * inFrames / outFrames;
-            int i0 = (int) pos;
-            int i1 = Math.min(i0 + 1, inFrames - 1);
-            double frac = pos - i0;
-            short v = (short) (tmp[i0] * (1 - frac) + tmp[i1] * frac);
-            out[outIdx++] = (byte) (v & 0xFF);
-            out[outIdx++] = (byte) (v >> 8);
-            out[outIdx++] = (byte) (v & 0xFF);
-            out[outIdx++] = (byte) (v >> 8);
+        int i6 = 0;
+        for (int i7 = 0; i7 < i3; i7++) {
+            double d = (i7 * i) / i3;
+            double d2 = d - ((int) d);
+            short s = (short) ((sArr[r3] * (1.0d - d2)) + (sArr[Math.min(r3 + 1, i - 1)] * d2));
+            byte b = (byte) (s & 255);
+            bArr2[i6] = b;
+            byte b2 = (byte) (s >> 8);
+            bArr2[i6 + 1] = b2;
+            int i8 = i6 + 3;
+            bArr2[i6 + 2] = b;
+            i6 += 4;
+            bArr2[i8] = b2;
         }
     }
 
-    /** stereo -> stereo 线性重采样 */
-    private static void resampleStereo(byte[] in, int inFrames, int inRate, byte[] out, int outFrames) {
-        short[] tmpL = new short[inFrames];
-        short[] tmpR = new short[inFrames];
-        for (int i = 0; i < inFrames; i++) {
-            int base = i * 4;
-            tmpL[i] = (short) ((in[base] & 0xFF) | (in[base + 1] << 8));
-            tmpR[i] = (short) ((in[base + 2] & 0xFF) | (in[base + 3] << 8));
+    private static void resampleStereo(byte[] bArr, int i, int i2, byte[] bArr2, int i3) {
+        short[] sArr = new short[i];
+        short[] sArr2 = new short[i];
+        for (int i4 = 0; i4 < i; i4++) {
+            int i5 = i4 * 4;
+            sArr[i4] = (short) ((bArr[i5] & 255) | (bArr[i5 + 1] << 8));
+            sArr2[i4] = (short) ((bArr[i5 + 3] << 8) | (bArr[i5 + 2] & 255));
         }
-        int outIdx = 0;
-        for (int o = 0; o < outFrames; o++) {
-            double pos = (double) o * inFrames / outFrames;
-            int i0 = (int) pos;
-            int i1 = Math.min(i0 + 1, inFrames - 1);
-            double frac = pos - i0;
-            short l = (short) (tmpL[i0] * (1 - frac) + tmpL[i1] * frac);
-            short r = (short) (tmpR[i0] * (1 - frac) + tmpR[i1] * frac);
-            out[outIdx++] = (byte) (l & 0xFF);
-            out[outIdx++] = (byte) (l >> 8);
-            out[outIdx++] = (byte) (r & 0xFF);
-            out[outIdx++] = (byte) (r >> 8);
+        int i6 = 0;
+        for (int i7 = 0; i7 < i3; i7++) {
+            double d = (i7 * i) / i3;
+            int i8 = (int) d;
+            int iMin = Math.min(i8 + 1, i - 1);
+            double d2 = 1.0d - (d - i8);
+            short s = (short) ((sArr[i8] * d2) + (sArr[iMin] * r6));
+            short s2 = (short) ((sArr2[i8] * d2) + (sArr2[iMin] * r6));
+            bArr2[i6] = (byte) (s & 255);
+            bArr2[i6 + 1] = (byte) (s >> 8);
+            int i9 = i6 + 3;
+            bArr2[i6 + 2] = (byte) (s2 & 255);
+            i6 += 4;
+            bArr2[i9] = (byte) (s2 >> 8);
         }
     }
 }
